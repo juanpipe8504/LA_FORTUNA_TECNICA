@@ -9,19 +9,20 @@ from __future__ import annotations
 import json
 import logging
 import sys
+from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from datetime import datetime, timezone
-from typing import Any, Iterator
+from datetime import UTC, datetime
+from typing import Any
 
-_context: ContextVar[dict[str, Any]] = ContextVar("log_context", default={})
+_context: ContextVar[dict[str, Any] | None] = ContextVar("log_context", default=None)
 
 _RESERVED = set(logging.LogRecord("", 0, "", 0, "", (), None).__dict__) | {"message"}
 
 
 class _ContextFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
-        for key, value in _context.get().items():
+        for key, value in (_context.get() or {}).items():
             setattr(record, key, value)
         return True
 
@@ -29,7 +30,7 @@ class _ContextFilter(logging.Filter):
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, Any] = {
-            "ts": datetime.fromtimestamp(record.created, timezone.utc).isoformat(),
+            "ts": datetime.fromtimestamp(record.created, UTC).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "msg": record.getMessage(),
@@ -63,7 +64,7 @@ def get_logger(name: str) -> logging.Logger:
 
 @contextmanager
 def bind_context(**values: Any) -> Iterator[None]:
-    token = _context.set({**_context.get(), **values})
+    token = _context.set({**(_context.get() or {}), **values})
     try:
         yield
     finally:
