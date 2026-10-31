@@ -49,6 +49,23 @@ def rows_to_markdown(rows: list[list[object]]) -> tuple[str, int, int]:
     return "\n".join(lines), len(cleaned), len(keep)
 
 
+def read_rows(page: pymupdf.Page, table: object) -> list[list[object]]:
+    """Read each cell through ``page.get_textbox`` on its rectangle.
+
+    ``table.extract()`` concatenates characters without spaces when a PDF positions
+    words individually ("Relubricaciónderodamientos"), which breaks BM25 and
+    embeddings. Reading by cell rect keeps word spacing; falls back to ``extract``.
+    """
+    try:
+        return [
+            [page.get_textbox(cell) if cell else "" for cell in row.cells]
+            for row in table.rows  # type: ignore[attr-defined]
+        ]
+    except Exception:
+        logger.debug("table_cell_read_fallback", extra={"page": page.number + 1}, exc_info=True)
+        return table.extract()  # type: ignore[attr-defined]
+
+
 class TableExtractor:
     """Wraps ``find_tables``; tables with fewer than 2 rows or 2 columns are discarded
     as they are almost always false positives (rules, boxes around text)."""
@@ -66,7 +83,7 @@ class TableExtractor:
         tables: list[ExtractedTable] = []
         for table in finder.tables:
             try:
-                markdown, rows, cols = rows_to_markdown(table.extract())
+                markdown, rows, cols = rows_to_markdown(read_rows(page, table))
             except Exception:
                 logger.warning("table_extraction_failed", extra={"page": page.number + 1}, exc_info=True)
                 continue

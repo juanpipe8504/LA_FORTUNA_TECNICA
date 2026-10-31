@@ -205,3 +205,22 @@ def test_two_column_layout_reads_left_column_first(tmp_path, blob_storage):
 
     texts = [e.text.split(".")[0] for e in _parse(path, blob_storage).elements]
     assert texts == [f"Left paragraph {i}" for i in range(3)] + [f"Right paragraph {i}" for i in range(3)]
+
+
+def test_table_cells_keep_word_spacing_on_sample_manual():
+    """Regression: table.extract() glued words ("Relubricaciónderodamientos")."""
+    import pathlib
+
+    import pymupdf
+
+    from app.infrastructure.parsing.table_extractor import TableExtractor
+
+    sample = pathlib.Path(__file__).parents[4] / "docs" / "sample" / "Manual_Motor.pdf"
+    if not sample.exists():
+        import pytest
+
+        pytest.skip("sample manual not available")
+    with pymupdf.open(sample) as doc:
+        markdown = "\n".join(t.markdown for t in TableExtractor().extract(doc[4]))
+    assert "Relubricación de rodamientos" in markdown
+    assert "4000 h" in markdown
