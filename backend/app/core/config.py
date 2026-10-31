@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     openai_chat_model: str = "gpt-4o-mini"
     openai_embedding_model: str = "text-embedding-3-small"
     ollama_base_url: str = "http://localhost:11434"
-    ollama_chat_model: str = "llama3.2-vision"
+    ollama_chat_model: str = "gemma3:4b"
     ollama_embedding_model: str = "nomic-embed-text"
     llm_temperature: float = 0.0
     llm_max_tokens: int = 1024

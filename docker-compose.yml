@@ -65,6 +65,9 @@ services:
 
   worker:
     <<: *backend
+    # Reuse the image built by `api` (building the same tag twice in parallel races).
+    build: !reset null
+    pull_policy: never
     command:
       - celery
       - -A
@@ -94,13 +97,30 @@ services:
     restart: unless-stopped
 
   ollama:
-    image: ollama/ollama:0.5.7
+    image: ollama/ollama:0.35.1   # recent enough for the gemma3 manifest
     profiles: ["ollama"]
     ports:
       - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     restart: unless-stopped
+
+  # One-shot: pulls the chat model into the shared volume (no-op if already present).
+  ollama-pull:
+    image: ollama/ollama:0.35.1
+    profiles: ["ollama"]
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["ollama", "pull", "${OLLAMA_CHAT_MODEL:-gemma3:4b}"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
     # GPU (NVIDIA) – uncomment if available:
     # deploy:
     #   resources:

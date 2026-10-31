@@ -47,9 +47,13 @@ docker compose up --build
 cp .env.example .env
 # en .env:  LLM_PROVIDER=ollama   (EMBEDDING_PROVIDER=fastembed ya es local)
 docker compose --profile ollama up --build -d
-docker compose exec ollama ollama pull llama3.2-vision     # chat + visión
+# el servicio one-shot `ollama-pull` descarga OLLAMA_CHAT_MODEL (gemma3:4b, ~3.3 GB) automáticamente:
+docker compose logs -f ollama-pull
 docker compose exec ollama ollama pull nomic-embed-text    # solo si EMBEDDING_PROVIDER=ollama
 ```
+
+> `gemma3:4b` es multimodal (describe diagramas en la ingesta), maneja bien español y corre en CPU con ~8 GB
+> asignados a Docker. Con GPU, modelos mayores (`gemma3:12b`, `llama3.2-vision`) dan mejores respuestas.
 
 > Para usar un Ollama que ya corre en tu máquina: `DOCKER_OLLAMA_BASE_URL=http://host.docker.internal:11434 docker compose up`.
 
