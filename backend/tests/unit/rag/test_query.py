@@ -257,3 +257,12 @@ def test_renumber_citations_maps_cited_blocks_to_source_positions():
 
     text = "Voltaje 400 V [4]. Ver también [2, 4] y [9]."
     assert renumber_citations(text, [4, 2]) == "Voltaje 400 V [1]. Ver también [2, 1] y ."
+
+
+def test_user_prompt_pins_spanish_for_spanish_questions():
+    from app.application.prompts import build_user_prompt
+
+    prompt = build_user_prompt("¿Cuál es el precio?", "<context></context>", "Spanish")
+    assert "Write the whole answer in Spanish." in prompt
+    assert prompt.rstrip().endswith("Question: ¿Cuál es el precio?")
+    assert "Write the whole answer" not in build_user_prompt("What is it?", "<context></context>")

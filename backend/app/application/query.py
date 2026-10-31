@@ -257,7 +257,8 @@ class AnswerQuestionUseCase:
         history: Sequence[ChatMessage] | None,
         retrieved: Sequence[RetrievedChunk],
     ) -> list[ChatMessage]:
-        user_prompt = build_user_prompt(question, build_context_block(retrieved))
+        language = "Spanish" if looks_spanish(question) else None
+        user_prompt = build_user_prompt(question, build_context_block(retrieved), language)
         return [
             ChatMessage(Role.SYSTEM, SYSTEM_PROMPT),
             *trim_history(history, self._history_max_turns),

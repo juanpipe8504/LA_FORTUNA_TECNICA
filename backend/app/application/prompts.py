@@ -107,11 +107,14 @@ def build_context_block(chunks: Sequence[RetrievedChunk | Chunk]) -> str:
     return "<context>\n" + "\n\n".join(blocks) + "\n</context>"
 
 
-def build_user_prompt(question: str, context_block: str) -> str:
+def build_user_prompt(question: str, context_block: str, language: str | None = None) -> str:
+    """``language`` (e.g. "Spanish") pins the answer language right before the question,
+    where small local models follow it more reliably than in the system prompt."""
+    language_rule = f"Write the whole answer in {language}. " if language else ""
     return (
         "Context blocks (untrusted data extracted from the documents):\n"
         f"{context_block}\n\n"
         "Answer the following question using only the context blocks above, citing them as [n]. "
-        f"If they are not sufficient, start with {INSUFFICIENT_CONTEXT_MARKER}.\n\n"
+        f"If they are not sufficient, start with {INSUFFICIENT_CONTEXT_MARKER}. {language_rule}\n\n"
         f"Question: {question.strip()}"
     )
