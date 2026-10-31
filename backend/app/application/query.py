@@ -93,6 +93,28 @@ def renumber_citations(text: str, cited: Sequence[int]) -> str:
     return _CITATION_RE.sub(_replace, text)
 
 
+def collapse_table_hits(hits: Sequence[RetrievedChunk], limit: int) -> list[RetrievedChunk]:
+    """Keep only the best-scoring chunk per table and return at most ``limit`` hits.
+
+    A table is indexed as a whole-table chunk plus one chunk per row, all sharing
+    document, page and bbox; without collapsing, one table could fill the context
+    and show up several times in the sources.
+    """
+    seen: set[tuple[str, int, tuple[float, ...] | None]] = set()
+    result: list[RetrievedChunk] = []
+    for hit in hits:  # already sorted by score desc
+        chunk = hit.chunk
+        if chunk.chunk_type is ChunkType.TABLE:
+            key = (chunk.document_id, chunk.page_start, tuple(chunk.bbox.to_list()) if chunk.bbox else None)
+            if key in seen:
+                continue
+            seen.add(key)
+        result.append(hit)
+        if len(result) == limit:
+            break
+    return result
+
+
 def strip_marker(text: str) -> tuple[str, bool]:
     """Remove the insufficient-context marker. Returns (clean_text, had_marker)."""
     had_marker = INSUFFICIENT_CONTEXT_MARKER in text
@@ -216,9 +238,9 @@ class AnswerQuestionUseCase:
 
         query_vector = self._embeddings.embed_query(question)
         hits = self._vector_store.hybrid_search(
-            question, query_vector, top_k=self._top_k, document_ids=document_ids or None
+            question, query_vector, top_k=self._top_k * 2, document_ids=document_ids or None
         )
-        retrieved = [h for h in hits if h.score >= self._min_score]
+        retrieved = collapse_table_hits([h for h in hits if h.score >= self._min_score], self._top_k)
 
         if not retrieved:
             answer = Answer(text=no_information_message(question), has_sufficient_context=False)

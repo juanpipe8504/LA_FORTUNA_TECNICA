@@ -115,7 +115,8 @@ def test_happy_path_cites_filters_sources_and_returns_images(retrieved) -> None:
     use_case, llm, store = _use_case(retrieved, reply="The max pressure is **250 bar** [1].", top_k=3)
     answer = use_case.execute("max pressure?", document_ids=["doc1"])
 
-    assert store.calls == [{"query": "max pressure?", "top_k": 3, "document_ids": ["doc1"]}]
+    # over-fetches 2x so that collapsing table rows still leaves top_k distinct hits
+    assert store.calls == [{"query": "max pressure?", "top_k": 6, "document_ids": ["doc1"]}]
     assert answer.has_sufficient_context is True
     assert answer.text == "The max pressure is **250 bar** [1]."
     assert [s.chunk_id for s in answer.sources] == ["c1"]
@@ -266,3 +267,22 @@ def test_user_prompt_pins_spanish_for_spanish_questions():
     assert "Write the whole answer in Spanish." in prompt
     assert prompt.rstrip().endswith("Question: ¿Cuál es el precio?")
     assert "Write the whole answer" not in build_user_prompt("What is it?", "<context></context>")
+
+
+def test_collapse_table_hits_keeps_best_chunk_per_table_and_limit():
+    from app.application.query import collapse_table_hits
+    from app.domain.models import BoundingBox, Chunk, ChunkType, RetrievedChunk
+
+    def hit(cid, ctype, score, bbox=(0, 0, 10, 10), page=5):
+        chunk = Chunk(cid, "d", "M.pdf", cid, page, page, BoundingBox(*bbox), ctype)
+        return RetrievedChunk(chunk, score)
+
+    hits = [
+        hit("row-relub", ChunkType.TABLE, 0.9),
+        hit("text-1", ChunkType.TEXT, 0.8),
+        hit("whole-table", ChunkType.TABLE, 0.7),  # same table -> dropped
+        hit("row-other", ChunkType.TABLE, 0.6),  # same table -> dropped
+        hit("other-table", ChunkType.TABLE, 0.5, bbox=(0, 50, 10, 60)),
+        hit("text-2", ChunkType.TEXT, 0.4),
+    ]
+    assert [h.chunk.chunk_id for h in collapse_table_hits(hits, 3)] == ["row-relub", "text-1", "other-table"]
