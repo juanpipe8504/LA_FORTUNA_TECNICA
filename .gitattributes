@@ -1,0 +1,24 @@
+# Normalize line endings: everything text is stored and checked out as LF
+# (shell scripts, Dockerfiles and Makefiles break with CRLF inside containers).
+* text=auto eol=lf
+
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+Makefile    text eol=lf
+*.py        text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+
+# Binary assets
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.webp binary
+*.ico  binary
+*.pdf  binary
+*.woff binary
+*.woff2 binary
+*.ttf  binary
+*.mp4  binary
+*.zip  binary
