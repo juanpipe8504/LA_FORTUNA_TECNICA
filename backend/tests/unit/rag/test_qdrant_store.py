@@ -11,6 +11,7 @@ from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedR
 from app.domain.exceptions import ExternalServiceError, TransientError
 from app.domain.models import ChunkType
 from app.infrastructure.vectorstore.qdrant_store import (
+    FastEmbedSparseEncoder,
     QdrantVectorStore,
     chunk_to_payload,
     payload_to_chunk,
@@ -151,3 +152,59 @@ def test_query_uses_rrf_fusion_with_two_prefetches(sparse_encoder) -> None:
     assert kwargs["query"].fusion.value == "rrf"
     assert kwargs["query_filter"].must[0].match.any == ["d1", "d2"]
     assert kwargs["limit"] == 5
+
+
+# --------------------------------------------------------------------------- BM25 language
+class _FakeSparseTextEmbedding:
+    created: list[dict] = []
+
+    def __init__(self, **kwargs) -> None:
+        type(self).created.append(kwargs)
+
+    def embed(self, texts):
+        return [MagicMock(indices=[1, 2], values=[1.0, 2.0]) for _ in texts]
+
+    def query_embed(self, text):
+        return iter([MagicMock(indices=[3], values=[1.0])])
+
+
+@pytest.fixture
+def fake_fastembed(monkeypatch):
+    import fastembed
+
+    _FakeSparseTextEmbedding.created = []
+    monkeypatch.setattr(fastembed, "SparseTextEmbedding", _FakeSparseTextEmbedding)
+    return _FakeSparseTextEmbedding
+
+
+def test_sparse_encoder_defaults_to_spanish_and_loads_lazily(fake_fastembed) -> None:
+    encoder = FastEmbedSparseEncoder()
+    assert fake_fastembed.created == []  # nothing loaded at construction
+
+    assert encoder.encode_query("relubricar rodamientos") == ([3], [1.0])
+    assert encoder.encode_documents(["a", "b"]) == [([1, 2], [1.0, 2.0])] * 2
+    assert fake_fastembed.created == [{"model_name": "Qdrant/bm25", "language": "spanish"}]
+
+
+def test_sparse_encoder_passes_configured_language(fake_fastembed) -> None:
+    FastEmbedSparseEncoder(language="english").encode_query("q")
+
+    assert fake_fastembed.created == [{"model_name": "Qdrant/bm25", "language": "english"}]
+
+
+def test_store_builds_sparse_encoder_with_bm25_language(fake_fastembed) -> None:
+    client = MagicMock()
+    client.collection_exists.return_value = False
+    store = QdrantVectorStore(client, "test", bm25_language="english")
+
+    store.hybrid_search("q", [0.0], top_k=1)  # encodes the query, collection missing -> []
+
+    assert fake_fastembed.created == [{"model_name": "Qdrant/bm25", "language": "english"}]
+
+
+def test_store_positional_sparse_model_is_backward_compatible(fake_fastembed) -> None:
+    client = MagicMock()
+    client.collection_exists.return_value = False
+    QdrantVectorStore(client, "test", "Qdrant/bm25").hybrid_search("q", [0.0], top_k=1)
+
+    assert fake_fastembed.created == [{"model_name": "Qdrant/bm25", "language": "spanish"}]

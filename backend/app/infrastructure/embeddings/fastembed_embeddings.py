@@ -37,7 +37,7 @@ def known_dimension(model_name: str) -> int | None:
 class FastEmbedEmbeddings(EmbeddingPort):
     def __init__(
         self,
-        model_name: str = "BAAI/bge-small-en-v1.5",
+        model_name: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
         *,
         model_factory: ModelFactory | None = None,
     ) -> None:

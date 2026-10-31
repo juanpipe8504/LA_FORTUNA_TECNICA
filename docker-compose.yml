@@ -7,6 +7,9 @@ x-backend: &backend
   build:
     context: ./backend
     dockerfile: Dockerfile
+    args:
+      # Bake the same dense model the app uses (read from .env) into the image.
+      FASTEMBED_MODEL: ${FASTEMBED_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}
   image: multimodal-rag-backend:latest
   env_file:
     - .env

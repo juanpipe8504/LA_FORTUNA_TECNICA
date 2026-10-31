@@ -203,7 +203,20 @@ def test_use_cases_are_wired_with_shared_ports(tmp_path, fake_modules, no_networ
     assert c.vector_store.kwargs == {
         "client": no_network_clients["qdrant"],
         "collection": settings.qdrant_collection,
+        "bm25_language": settings.bm25_language,
     }
+
+
+def test_bm25_language_is_wired_from_settings(tmp_path, fake_modules, no_network_clients):
+    c = build_container(_settings(tmp_path, bm25_language="English"))
+
+    assert c.vector_store.kwargs["bm25_language"] == "english"
+
+
+def test_bm25_language_defaults_to_spanish_and_rejects_unknown(tmp_path) -> None:
+    assert _settings(tmp_path).bm25_language == "spanish"
+    with pytest.raises(ValueError, match="BM25_LANGUAGE"):
+        _settings(tmp_path, bm25_language="klingon")
 
 
 def test_job_repository_redis_in_dev_in_memory_in_test(tmp_path, fake_modules, no_network_clients):

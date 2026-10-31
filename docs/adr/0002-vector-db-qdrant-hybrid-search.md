@@ -15,7 +15,8 @@ explícitamente recuperación híbrida.
 - Usar **Qdrant** (`qdrant/qdrant` en docker-compose) a través de `QdrantVectorStore`
   (`app/infrastructure/vectorstore/qdrant_store.py`), que implementa `VectorStorePort`.
 - Cada punto tiene dos *named vectors*: `dense` (embedding del proveedor configurado) y `bm25`
-  (vector *sparse* calculado con FastEmbed `Qdrant/bm25`, con modificador IDF aplicado por Qdrant).
+  (vector *sparse* calculado con FastEmbed `Qdrant/bm25`, con modificador IDF aplicado por Qdrant;
+  stemmer y *stop-words* del idioma `BM25_LANGUAGE`, `spanish` por defecto).
 - `hybrid_search` usa la **Query API** de Qdrant: dos `prefetch` (denso y sparse) fusionados con
   **Reciprocal Rank Fusion (RRF)** en el servidor, en una única llamada.
 - El payload guarda el chunk completo (texto, páginas, `bbox`, `section_path`, `chunk_type`, `images`)

@@ -260,6 +260,8 @@ Variables clave:
 |---|---|---|
 | `LLM_PROVIDER` | `openai` \| `ollama` | Modelo de chat y de visión (descripción de imágenes) |
 | `EMBEDDING_PROVIDER` | `fastembed` (defecto) \| `openai` \| `ollama` | Vectores densos. Al cambiarlo, usa otra `QDRANT_COLLECTION` y re-ingesta |
+| `FASTEMBED_MODEL` | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` (defecto) | Modelo denso local (se precarga en la imagen). Al cambiarlo, nueva `QDRANT_COLLECTION` y re-ingesta |
+| `BM25_LANGUAGE` | `spanish` (defecto) \| `english` \| `portuguese` \| … | Stemmer y *stop-words* del BM25. Al cambiarlo, nueva `QDRANT_COLLECTION` y re-ingesta |
 | `DESCRIBE_IMAGES` | `true` \| `false` | Describir imágenes con el LLM de visión durante la ingesta |
 | `RETRIEVAL_TOP_K`, `MAX_IMAGES_PER_ANSWER` | enteros | Contexto y nº de imágenes por respuesta |
 | `RETRY_*`, `CIRCUIT_*` | números | Política de reintentos y circuit breaker |
@@ -438,7 +440,7 @@ Cada decisión relevante tiene un ADR (contexto, decisión, alternativas, consec
 | [0005](docs/adr/0005-resilience-retry-circuit-breaker.md) | Retry + circuit breaker | Decoradores de puertos; solo errores transitorios se reintentan; 503 con circuito abierto. |
 | [0006](docs/adr/0006-defensive-prompting.md) | Prompting defensivo | Guardia pre-LLM, citas `[n]`, `[[NO_CONTEXT]]`, contexto tratado como datos, temperatura 0. |
 | [0007](docs/adr/0007-image-text-spatial-linking.md) | Vínculo imagen ↔ texto | Distancia entre bbox en la misma página + referencias "Figura N"; ranking `score / (1 + d/100)`. |
-| [0008](docs/adr/0008-embeddings-provider-fastembed-default.md) | FastEmbed por defecto | Embeddings locales en CPU, modelos precargados en la imagen; OpenAI/Ollama intercambiables. |
+| [0008](docs/adr/0008-embeddings-provider-fastembed-default.md) | FastEmbed por defecto | Embeddings locales en CPU (MiniLM multilingüe elegido por benchmark) + BM25 en español, modelos precargados en la imagen; OpenAI/Ollama intercambiables. |
 
 ---
 
@@ -449,8 +451,10 @@ Cada decisión relevante tiene un ADR (contexto, decisión, alternativas, consec
   la región a PNG (144 dpi) cuando parece un diagrama (≥ 5 trazos, ≥ 48 pt por lado, sin solapar tablas);
   así la Figura 2 del manual de ejemplo se recupera como imagen. Es una heurística: diagramas muy
   dispersos o mezclados con texto pueden fragmentarse.
-- **Modelo de embeddings en inglés** por defecto (`bge-small-en`); para corpus en español usar uno
-  multilingüe (`intfloat/multilingual-e5-large`, `BAAI/bge-m3`) o `EMBEDDING_PROVIDER=openai`.
+- **Embeddings ligeros por defecto:** `paraphrase-multilingual-MiniLM-L12-v2` (384 d) se eligió por
+  medición frente a `bge-small-en`, `mpnet` y `multilingual-e5-large` (MRR híbrido 0,83 vs 0,86 de e5,
+  ~20× más rápido y 10× más pequeño; ver [ADR 0008](docs/adr/0008-embeddings-provider-fastembed-default.md)).
+  Trunca a 128 *tokens* el vector denso; con GPU/más RAM, `intfloat/multilingual-e5-large` o `BAAI/bge-m3`.
 - **Re-ranking:** añadir un *cross-encoder* tras la fusión RRF para mejorar la precisión del top-k.
 - **Evaluación:** conjunto de preguntas doradas y métricas (faithfulness, context recall) con RAGAS
   en CI.

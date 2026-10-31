@@ -210,7 +210,11 @@ def _build_qdrant_client(settings: Settings) -> Any:
 def _build_vector_store(settings: Settings, client: Any) -> VectorStorePort:
     from app.infrastructure.vectorstore.qdrant_store import QdrantVectorStore
 
-    return QdrantVectorStore(client=client, collection=settings.qdrant_collection)
+    return QdrantVectorStore(
+        client=client,
+        collection=settings.qdrant_collection,
+        bm25_language=settings.bm25_language,
+    )
 
 
 def _build_redis_client(settings: Settings) -> Any:

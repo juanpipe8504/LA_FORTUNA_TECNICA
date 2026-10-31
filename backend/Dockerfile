@@ -25,12 +25,16 @@ RUN pip install --upgrade pip setuptools wheel \
 
 # Pre-download the fastembed models (dense + BM25 sparse) so the runtime image
 # works offline and the first request/ingestion is not slowed down.
+# FASTEMBED_MODEL must match the runtime setting (docker-compose passes the value
+# from .env as a build arg). Qdrant/bm25 ships the stop-word lists of every
+# language, so BM25_LANGUAGE needs no build-time choice.
+ARG FASTEMBED_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
 ENV FASTEMBED_CACHE_PATH=/opt/models/fastembed \
     HF_HOME=/opt/models/huggingface
-RUN python -c "from fastembed import TextEmbedding, SparseTextEmbedding; \
-TextEmbedding('BAAI/bge-small-en-v1.5'); \
+RUN python -c "import sys; from fastembed import TextEmbedding, SparseTextEmbedding; \
+TextEmbedding(sys.argv[1]); \
 SparseTextEmbedding('Qdrant/bm25'); \
-print('fastembed models cached')"
+print('fastembed models cached:', sys.argv[1])" "${FASTEMBED_MODEL}"
 
 # ---------------------------------------------------------------------------
 # Stage 2: runtime – slim image, non-root user

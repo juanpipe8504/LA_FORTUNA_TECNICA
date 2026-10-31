@@ -3,7 +3,10 @@
 Collection layout:
 * named dense vector ``dense`` (cosine) produced by the configured EmbeddingPort;
 * named sparse vector ``bm25`` with the ``IDF`` modifier: Qdrant computes IDF
-  server-side, the client only sends term frequencies (fastembed ``Qdrant/bm25``);
+  server-side, the client only sends term frequencies (fastembed ``Qdrant/bm25``,
+  with a language-specific Snowball stemmer + stop-word list, ``spanish`` by
+  default). The language determines the token ids, so documents and queries must
+  be encoded with the same one: changing it requires re-ingesting;
 * payload = the full serialized chunk (+ keyword index on ``document_id``).
 
 Hybrid search uses the Query API: two prefetches (dense / sparse, ``top_k * 4``
@@ -49,11 +52,23 @@ class SparseEncoder(Protocol):
     def encode_query(self, text: str) -> SparseTuple: ...
 
 
-class FastEmbedSparseEncoder:
-    """BM25 term-frequency encoder from fastembed, loaded lazily (thread-safe)."""
+DEFAULT_SPARSE_MODEL = "Qdrant/bm25"
+DEFAULT_BM25_LANGUAGE = "spanish"
 
-    def __init__(self, model_name: str = "Qdrant/bm25") -> None:
+
+class FastEmbedSparseEncoder:
+    """BM25 term-frequency encoder from fastembed, loaded lazily (thread-safe).
+
+    ``language`` selects fastembed's Snowball stemmer and stop-word list
+    (e.g. ``spanish`` folds plurals/inflections such as "rodamiento"/"rodamientos";
+    verb/noun pairs like "relubricar"/"relubricación" still stem differently).
+    """
+
+    def __init__(
+        self, model_name: str = DEFAULT_SPARSE_MODEL, language: str = DEFAULT_BM25_LANGUAGE
+    ) -> None:
         self._model_name = model_name
+        self._language = language
         self._model: Any | None = None
         self._lock = threading.Lock()
 
@@ -63,8 +78,13 @@ class FastEmbedSparseEncoder:
                 if self._model is None:
                     from fastembed import SparseTextEmbedding
 
-                    logger.info("sparse_model_loading", extra={"model": self._model_name})
-                    self._model = SparseTextEmbedding(model_name=self._model_name)
+                    logger.info(
+                        "sparse_model_loading",
+                        extra={"model": self._model_name, "language": self._language},
+                    )
+                    self._model = SparseTextEmbedding(
+                        model_name=self._model_name, language=self._language
+                    )
         return self._model
 
     @staticmethod
@@ -152,13 +172,16 @@ class QdrantVectorStore(VectorStorePort):
         self,
         client: QdrantClient,
         collection: str,
-        sparse_model: str = "Qdrant/bm25",
+        sparse_model: str = DEFAULT_SPARSE_MODEL,
         *,
         sparse_encoder: SparseEncoder | None = None,
+        bm25_language: str = DEFAULT_BM25_LANGUAGE,
     ) -> None:
         self._client = client
         self._collection = collection
-        self._sparse: SparseEncoder = sparse_encoder or FastEmbedSparseEncoder(sparse_model)
+        self._sparse: SparseEncoder = sparse_encoder or FastEmbedSparseEncoder(
+            sparse_model, language=bm25_language
+        )
         self._ready = False
         self._lock = threading.Lock()
 

@@ -47,7 +47,7 @@ flowchart LR
 | Campo | Contenido |
 |---|---|
 | vector `dense` | embedding del texto del chunk (FastEmbed/OpenAI/Ollama) |
-| vector `bm25` | vector sparse BM25 (FastEmbed `Qdrant/bm25`, modificador IDF) |
+| vector `bm25` | vector sparse BM25 (FastEmbed `Qdrant/bm25`, idioma `BM25_LANGUAGE` = `spanish` por defecto, modificador IDF) |
 | payload | chunk completo: `chunk_id`, `document_id` (indexado), `document_name`, `text`, `page_start`, `page_end`, `bbox`, `chunk_type` (`text`/`table`/`image`), `section_path`, `images[]` (`image_id`, `page`, `bbox`, `distance`, `caption`) |
 
 ### Job de ingesta (Redis, TTL 7 días)

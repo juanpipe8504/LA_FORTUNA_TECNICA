@@ -59,8 +59,8 @@ caption match ("Figure 3", "Fig. 3", "Figura 3") forces a link with distance 0.
 | `app/infrastructure/llm/ollama_llm.py` | `OllamaLLM(LLMPort)` | `(base_url: str, model: str, timeout: float = 60.0)` uses `httpx` `/api/chat` |
 | `app/infrastructure/embeddings/openai_embeddings.py` | `OpenAIEmbeddings(EmbeddingPort)` | `(api_key: str, model: str, base_url: str \| None = None, timeout: float = 60.0)` |
 | `app/infrastructure/embeddings/ollama_embeddings.py` | `OllamaEmbeddings(EmbeddingPort)` | `(base_url: str, model: str, timeout: float = 60.0)` |
-| `app/infrastructure/embeddings/fastembed_embeddings.py` | `FastEmbedEmbeddings(EmbeddingPort)` | `(model_name: str = "BAAI/bge-small-en-v1.5")` (lazy model load) |
-| `app/infrastructure/vectorstore/qdrant_store.py` | `QdrantVectorStore(VectorStorePort)` | `(client: QdrantClient, collection: str, sparse_model: str = "Qdrant/bm25")`; named vectors `dense` + sparse `bm25`; hybrid = Qdrant Query API prefetch dense+sparse fused with RRF; payload stores the full chunk (incl. `images`, bbox lists); payload index on `document_id` |
+| `app/infrastructure/embeddings/fastembed_embeddings.py` | `FastEmbedEmbeddings(EmbeddingPort)` | `(model_name: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")` (lazy model load) |
+| `app/infrastructure/vectorstore/qdrant_store.py` | `QdrantVectorStore(VectorStorePort)` | `(client: QdrantClient, collection: str, sparse_model: str = "Qdrant/bm25", *, sparse_encoder=None, bm25_language: str = "spanish")`; named vectors `dense` + sparse `bm25`; hybrid = Qdrant Query API prefetch dense+sparse fused with RRF; payload stores the full chunk (incl. `images`, bbox lists); payload index on `document_id` |
 | `app/application/prompts.py` | `SYSTEM_PROMPT`, `build_context_block(chunks)`, `INSUFFICIENT_CONTEXT_MARKER = "[[NO_CONTEXT]]"` | – |
 | `app/application/query.py` | `AnswerQuestionUseCase` | `(embeddings, vector_store, llm, top_k: int = 6, min_score: float = 0.0, max_images: int = 2, history_max_turns: int = 6)`; `execute(question: str, history: list[ChatMessage] \| None = None, document_ids: list[str] \| None = None) -> Answer` |
 

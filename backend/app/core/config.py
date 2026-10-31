@@ -10,7 +10,7 @@ import os
 from enum import Enum
 from functools import lru_cache
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -29,6 +29,16 @@ class EmbeddingProvider(str, Enum):
     OPENAI = "openai"
     OLLAMA = "ollama"
     FASTEMBED = "fastembed"  # local CPU model, no API key needed
+
+
+# Snowball stemmers + stop-word lists shipped with fastembed's ``Qdrant/bm25``.
+BM25_LANGUAGES = frozenset(
+    {
+        "arabic", "danish", "dutch", "english", "finnish", "french", "german", "greek",
+        "hungarian", "italian", "norwegian", "portuguese", "romanian", "russian",
+        "spanish", "swedish", "tamil", "turkish",
+    }
+)
 
 
 def _env_files() -> tuple[str, ...]:
@@ -56,6 +66,9 @@ class Settings(BaseSettings):
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: SecretStr | None = None
     qdrant_collection: str = "documents"
+    # Stemmer/stop-words of the BM25 sparse vectors. Must match the documents'
+    # language; changing it changes the sparse token ids -> re-ingest.
+    bm25_language: str = "spanish"
 
     # --- LLM -------------------------------------------------------------
     llm_provider: LLMProvider = LLMProvider.OPENAI
@@ -72,7 +85,7 @@ class Settings(BaseSettings):
 
     # --- Embeddings ------------------------------------------------------
     embedding_provider: EmbeddingProvider = EmbeddingProvider.FASTEMBED
-    fastembed_model: str = "BAAI/bge-small-en-v1.5"
+    fastembed_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     embedding_batch_size: int = 32
 
     # --- Ingestion -------------------------------------------------------
@@ -94,6 +107,16 @@ class Settings(BaseSettings):
     retry_max_delay_seconds: float = 8.0
     circuit_failure_threshold: int = 5
     circuit_recovery_seconds: float = 30.0
+
+    @field_validator("bm25_language")
+    @classmethod
+    def _check_bm25_language(cls, value: str) -> str:
+        language = value.strip().lower()
+        if language not in BM25_LANGUAGES:
+            raise ValueError(
+                f"Unsupported BM25_LANGUAGE '{value}'. Use one of: {', '.join(sorted(BM25_LANGUAGES))}"
+            )
+        return language
 
     @property
     def uploads_dir(self) -> str:
