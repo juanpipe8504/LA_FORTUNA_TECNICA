@@ -12,7 +12,15 @@ that explains them. Rules implemented here:
 * **Text** – paragraphs of a section are split into sentences and packed
   greedily up to ``max_tokens`` (approx. ``words * 1.3``), never cutting a
   sentence; consecutive chunks share ``overlap_sentences`` sentences.
-* **Tables** – one atomic ``TABLE`` chunk (Markdown) regardless of size.
+* **Tables** – one atomic ``TABLE`` chunk (Markdown) regardless of size, so the
+  LLM gets the whole table as context. Tables with ``table_row_min_rows`` or more
+  body rows additionally get one ``TABLE`` chunk per row, rendered as
+  self-describing text ("Tabla 2: Plan — Tarea: X; Intervalo: 4000 h"): a single
+  row's signal is otherwise diluted among unrelated rows for both the dense
+  embedding and BM25. Row chunks are prefixed with the innermost heading only
+  (a long breadcrumb swamps a one-line row; measured on the sample manual) and
+  share the table's page/bbox (and so its image links), which lets consumers
+  group them with their whole-table chunk.
 * **Images** – one ``IMAGE`` chunk per figure (caption + section context; the
   ingestion use case later appends the vision-LLM description).
 * **Image links** – every chunk gets ``ImageRef``s to images on the same page
@@ -45,6 +53,8 @@ from app.infrastructure.parsing.captions import caption_label, mentioned_labels
 
 CHUNK_NAMESPACE = uuid.UUID("6f1c3a52-9a0e-4d43-8f7b-2f1e6c1d9b10")
 
+_UNESCAPED_PIPE = re.compile(r"(?<!\\)\|")
+_DELIMITER_CELL = re.compile(r"^:?-{3,}:?$")
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?…])[\"')\]]?\s+")
 _ABBREVIATIONS = {
     "e.g.",
@@ -96,6 +106,53 @@ def split_sentences(text: str) -> list[str]:
 
 
 @dataclass(slots=True)
+class MarkdownTable:
+    caption: str
+    header: list[str]
+    rows: list[list[str]]
+
+
+def _split_cells(line: str) -> list[str]:
+    inner = line.strip()
+    inner = inner[1:] if inner.startswith("|") else inner
+    inner = inner[:-1] if inner.endswith("|") and not inner.endswith("\\|") else inner
+    return [" ".join(c.replace("\\|", "|").split()) for c in _UNESCAPED_PIPE.split(inner)]
+
+
+def markdown_table_rows(text: str) -> MarkdownTable | None:
+    """Parse a GFM table (optionally preceded by caption lines) into caption/header/rows.
+
+    Escaped pipes (``\\|``) inside cells are restored. Returns ``None`` when ``text``
+    holds no table (no header + delimiter line).
+    """
+    caption_lines: list[str] = []
+    table_lines: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("|"):
+            table_lines.append(stripped)
+        elif not table_lines and stripped:
+            caption_lines.append(stripped)
+    if len(table_lines) < 2 or not all(_DELIMITER_CELL.match(c) for c in _split_cells(table_lines[1])):
+        return None
+    header = _split_cells(table_lines[0])
+    rows = [_split_cells(line) for line in table_lines[2:]]
+    return MarkdownTable(" ".join(caption_lines), header, [r for r in rows if any(r)])
+
+
+def table_row_text(caption: str, header: list[str], row: list[str]) -> str:
+    """Render one row as self-describing text: ``caption — Col: value; Col: value``."""
+    parts = []
+    for i, value in enumerate(row):
+        if not value:
+            continue
+        name = header[i] if i < len(header) else ""
+        parts.append(f"{name}: {value}" if name else value)
+    body = "; ".join(parts)
+    return f"{caption} — {body}" if caption else body
+
+
+@dataclass(slots=True)
 class _Sentence:
     text: str
     page: int
@@ -111,6 +168,9 @@ class _Draft:
     section_path: list[str]
     boxes: dict[int, BoundingBox] = field(default_factory=dict)  # page -> union bbox
     own_image_id: str | None = None
+    # Row chunks are short: the full breadcrumb would dominate their embedding,
+    # so only the innermost heading is prefixed (section_path keeps the full path).
+    leaf_prefix: bool = False
 
     def add_box(self, page: int, bbox: BoundingBox) -> None:
         current = self.boxes.get(page)
@@ -123,6 +183,7 @@ class LayoutAwareChunker(ChunkerPort):
         max_tokens: int = 400,
         overlap_sentences: int = 1,
         image_link_max_distance: float = 150.0,
+        table_row_min_rows: int | None = 3,
     ) -> None:
         if max_tokens < 20:
             raise ValueError("max_tokens must be >= 20")
@@ -131,6 +192,8 @@ class LayoutAwareChunker(ChunkerPort):
         self.max_tokens = max_tokens
         self.overlap_sentences = overlap_sentences
         self.image_link_max_distance = image_link_max_distance
+        # None disables row-level table chunks.
+        self.table_row_min_rows = table_row_min_rows
 
     # ------------------------------------------------------------------ #
     # Port
@@ -162,9 +225,7 @@ class LayoutAwareChunker(ChunkerPort):
                     buffer.append(sentence)
             elif kind == ElementType.TABLE:
                 self._flush(buffer, pending, path(), drafts, keep_overlap=False)
-                draft = _Draft(ChunkType.TABLE, element.text.strip(), path())
-                draft.add_box(element.page, element.bbox)
-                drafts.append(draft)
+                drafts.extend(self._table_drafts(element, path()))
             elif kind == ElementType.IMAGE and element.image_id:
                 pending.append(self._image_draft(element, assets.get(element.image_id), path()))
         self._flush(buffer, pending, path(), drafts, keep_overlap=False)
@@ -232,6 +293,23 @@ class LayoutAwareChunker(ChunkerPort):
         buffer[:] = overlap
 
     # ------------------------------------------------------------------ #
+    # Tables
+    # ------------------------------------------------------------------ #
+    def _table_drafts(self, element: PageElement, section_path: list[str]) -> list[_Draft]:
+        whole = _Draft(ChunkType.TABLE, element.text.strip(), list(section_path))
+        whole.add_box(element.page, element.bbox)
+        drafts = [whole]
+        min_rows = self.table_row_min_rows
+        table = markdown_table_rows(element.text) if min_rows is not None else None
+        if table and min_rows is not None and len(table.rows) >= max(1, min_rows):
+            for row in table.rows:
+                body = table_row_text(table.caption, table.header, row)
+                draft = _Draft(ChunkType.TABLE, body, list(section_path), leaf_prefix=True)
+                draft.add_box(element.page, element.bbox)
+                drafts.append(draft)
+        return drafts
+
+    # ------------------------------------------------------------------ #
     # Images
     # ------------------------------------------------------------------ #
     @staticmethod
@@ -274,11 +352,12 @@ class LayoutAwareChunker(ChunkerPort):
     def _finalise(self, index: int, draft: _Draft, document: ParsedDocument) -> Chunk:
         pages = sorted(draft.boxes)
         page_start = pages[0] if pages else 1
+        prefix_path = draft.section_path[-1:] if draft.leaf_prefix else draft.section_path
         return Chunk(
             chunk_id=str(uuid.uuid5(CHUNK_NAMESPACE, f"{document.document_id}:{index}")),
             document_id=document.document_id,
             document_name=document.filename,
-            text=self._prefix(draft.section_path) + draft.body,
+            text=self._prefix(prefix_path) + draft.body,
             page_start=page_start,
             page_end=pages[-1] if pages else page_start,
             bbox=draft.boxes.get(page_start),

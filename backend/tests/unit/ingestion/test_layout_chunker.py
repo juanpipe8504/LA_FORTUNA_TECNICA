@@ -149,7 +149,7 @@ def test_tables_are_atomic_even_when_large():
     )
     doc = document([heading("Data", 18, 40), para("Before the table.", 60), table, para("After it.", 720)])
 
-    chunks = LayoutAwareChunker(max_tokens=50).chunk(doc)
+    chunks = LayoutAwareChunker(max_tokens=50, table_row_min_rows=None).chunk(doc)
 
     assert [c.chunk_type for c in chunks] == [ChunkType.TEXT, ChunkType.TABLE, ChunkType.TEXT]
     assert "| row 199 | value 199 |" in chunks[1].text
