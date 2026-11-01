@@ -279,6 +279,7 @@ Prefijo `/api/v1`. Documentación interactiva en http://localhost:8000/docs.
 | `GET` | `/documents` | Documentos indexados | `[{document_id, filename, page_count, chunk_count, image_count, created_at}]` |
 | `GET` | `/documents/{document_id}/images/{image_id}` | Imagen extraída (PNG, cache inmutable) | bytes |
 | `POST` | `/chat` | Pregunta `{question, history: [{role, content}], document_ids: [..] \| null}` | `{answer, has_sufficient_context, sources: [...], images: [...]}` |
+| `POST` | `/chat/stream` | Igual que `/chat`, pero la respuesta se emite en *streaming* (SSE) | `text/event-stream`: eventos `token`, `final`, `error` (ver abajo) |
 | `GET` | `/health` | *Liveness* (también fuera del prefijo) | `{"status": "ok"}` |
 | `GET` | `/health/ready` | *Readiness*: comprueba Redis y Qdrant | 200 / 503 |
 
@@ -311,6 +312,42 @@ Respuesta de `/chat` (abreviada):
 
 Errores: `{"error": {"code", "message", "request_id"}}` — 404 no encontrado, 422 validación (p. ej.
 fichero que no es PDF), 503 circuito abierto, 502 fallo del proveedor externo.
+
+### Streaming: `POST /chat/stream` (Server-Sent Events)
+
+Mismo cuerpo que `POST /chat`. La respuesta es `text/event-stream` (cabeceras `Cache-Control: no-cache`
+y `X-Accel-Buffering: no`) con estos eventos:
+
+```text
+event: token
+data: {"text": "<fragmento de la respuesta>"}
+
+event: final
+data: {"answer": "...", "has_sufficient_context": true, "sources": [...], "images": [...]}
+
+event: error
+data: {"error": {"code": "upstream_error", "message": "...", "request_id": "..."}}
+```
+
+- `token`: deltas de texto según los genera el LLM. Nunca contienen el marcador interno
+  `[[NO_CONTEXT]]` (se retiene el inicio del *stream* hasta saber si empieza por él y se elimina).
+  Las citas `[n]` llevan la numeración original del modelo.
+- `final`: exactamente el mismo objeto JSON que devuelve `POST /chat` (texto final con las citas
+  renumeradas para que `[n]` apunte a `sources[n-1]`, fuentes e imágenes). El cliente debe sustituir el
+  texto acumulado por `final.answer`.
+- `error`: mismos `code`/`message` que los errores JSON (`service_unavailable`, `upstream_error`,
+  `validation_error`, `internal_error`...); tras él se cierra la conexión. Los errores de validación
+  del cuerpo (422) se siguen devolviendo como JSON normal, antes de abrir el *stream*.
+- Mientras se espera el primer token (los modelos en CPU tardan) se envían comentarios `: ping` cada
+  ~15 s como *keep-alive*; los clientes SSE los ignoran.
+
+Los reintentos y el *circuit breaker* solo actúan hasta el primer fragmento: un fallo a mitad del
+*stream* no se reintenta (ya se ha enviado texto) y llega como evento `error`.
+
+```bash
+curl -N -X POST http://localhost:8000/api/v1/chat/stream -H "Content-Type: application/json" \
+  -d '{"question":"¿Cómo se conecta el motor en estrella y en triángulo?","history":[]}'
+```
 
 ---
 

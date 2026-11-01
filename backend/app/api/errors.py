@@ -88,15 +88,31 @@ def internal_error_response(request: Request) -> JSONResponse:
     )
 
 
+def describe_error(exc: BaseException) -> tuple[int, str, str]:
+    """Map an exception to ``(status_code, code, public_message)``.
+
+    Single source of truth for the JSON handlers and for errors that happen
+    after a response has started (SSE ``error`` events). Logs like the handlers:
+    upstream/internal details are logged, never returned.
+    """
+    if isinstance(exc, ApiError):
+        return exc.status_code, exc.code, exc.message
+    if isinstance(exc, DomainError):
+        for exc_type, status_code, code, public_message in _DOMAIN_ERROR_MAP:
+            if isinstance(exc, exc_type):
+                # Upstream failures may carry provider internals: log them, return a generic text.
+                if public_message is not None:
+                    logger.warning("upstream failure: %s", exc, extra={"error_type": type(exc).__name__})
+                return status_code, code, public_message or str(exc)
+        logger.warning("unmapped domain error", extra={"error_type": type(exc).__name__})
+        return status.HTTP_400_BAD_REQUEST, "bad_request", str(exc)
+    logger.error("unhandled exception", exc_info=exc)
+    return status.HTTP_500_INTERNAL_SERVER_ERROR, "internal_error", INTERNAL_ERROR_MESSAGE
+
+
 async def _domain_error_handler(request: Request, exc: Exception) -> JSONResponse:
-    for exc_type, status_code, code, public_message in _DOMAIN_ERROR_MAP:
-        if isinstance(exc, exc_type):
-            # Upstream failures may carry provider internals: log them, return a generic text.
-            if public_message is not None:
-                logger.warning("upstream failure: %s", exc, extra={"error_type": type(exc).__name__})
-            return error_response(request, status_code, code, public_message or str(exc))
-    logger.warning("unmapped domain error", extra={"error_type": type(exc).__name__})
-    return error_response(request, status.HTTP_400_BAD_REQUEST, "bad_request", str(exc))
+    status_code, code, message = describe_error(exc)
+    return error_response(request, status_code, code, message)
 
 
 async def _api_error_handler(request: Request, exc: Exception) -> JSONResponse:

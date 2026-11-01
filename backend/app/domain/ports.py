@@ -8,7 +8,7 @@ swapping OpenAI for Ollama or Qdrant for another store never touches the core.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 
 from app.domain.models import (
     ChatMessage,
@@ -31,6 +31,22 @@ class LLMPort(ABC):
         temperature: float = 0.0,
         max_tokens: int | None = None,
     ) -> str: ...
+
+    def stream(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        temperature: float = 0.0,
+        max_tokens: int | None = None,
+    ) -> Iterator[str]:
+        """Yield the answer incrementally (text deltas).
+
+        Default (non-streaming providers / test doubles): the whole ``generate``
+        result as a single chunk. Adapters override it with real token streaming.
+        """
+        text = self.generate(messages, temperature=temperature, max_tokens=max_tokens)
+        if text:
+            yield text
 
     @abstractmethod
     def describe_image(self, image: bytes, *, context: str = "") -> str:

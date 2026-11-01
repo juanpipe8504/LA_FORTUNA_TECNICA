@@ -111,3 +111,83 @@ def test_embeddings_wrapper(clock, fake_sleep) -> None:
     assert emb.dimension == 1
     assert inner.calls == 4
     assert emb.breaker.state is CircuitState.CLOSED
+
+
+# --------------------------------------------------------------------------- streaming
+class StreamingScriptedLLM(ScriptedLLM):
+    """Each stream() call consumes one script: an exception (fails on open) or a list
+    of chunks / exceptions (an exception inside the list fails mid-stream)."""
+
+    def __init__(self, scripts: list) -> None:
+        super().__init__([])
+        self.scripts = scripts
+        self.opened = 0
+        self.closed = 0
+
+    def stream(self, messages, *, temperature=0.0, max_tokens=None):
+        self.opened += 1
+        self.calls.append(("stream", temperature, max_tokens))
+        script = self.scripts.pop(0)
+        try:
+            if isinstance(script, BaseException):
+                raise script
+            for item in script:
+                if isinstance(item, BaseException):
+                    raise item
+                yield item
+        finally:
+            self.closed += 1
+
+
+def test_stream_retries_before_first_chunk(clock, fake_sleep) -> None:
+    inner = StreamingScriptedLLM([TransientError("503"), [TransientError("reset")], ["Ho", "la"]])
+    breaker = CircuitBreaker("llm", clock=clock)
+    llm = ResilientLLM(inner, breaker, POLICY, sleep=fake_sleep)
+
+    assert list(llm.stream(MSG, temperature=0.2, max_tokens=10)) == ["Ho", "la"]
+    assert inner.opened == 3
+    assert inner.calls[-1] == ("stream", 0.2, 10)
+    assert fake_sleep.calls == [0.1, 0.2]
+    assert breaker.failure_count == 0
+
+
+def test_stream_failure_after_first_chunk_is_not_retried_and_counts(clock, fake_sleep) -> None:
+    inner = StreamingScriptedLLM([["Ho", TransientError("reset mid-stream")], ["never"]])
+    breaker = CircuitBreaker("llm", failure_threshold=1, clock=clock)
+    llm = ResilientLLM(inner, breaker, POLICY, sleep=fake_sleep)
+
+    received: list[str] = []
+    with pytest.raises(ExternalServiceError):
+        received.extend(llm.stream(MSG))
+    assert received == ["Ho"]
+    assert inner.opened == 1 and fake_sleep.calls == []
+    assert breaker.state is CircuitState.OPEN
+    with pytest.raises(CircuitOpenError):
+        list(llm.stream(MSG))
+    assert inner.opened == 1
+
+
+def test_stream_empty_and_consumer_close(clock, fake_sleep) -> None:
+    inner = StreamingScriptedLLM([[], ["a", "b", "c"]])
+    breaker = CircuitBreaker("llm", clock=clock)
+    llm = ResilientLLM(inner, breaker, POLICY, sleep=fake_sleep)
+
+    assert list(llm.stream(MSG)) == []
+
+    stream = llm.stream(MSG)
+    assert next(stream) == "a"
+    stream.close()  # client went away: inner stream closed, not a breaker failure
+    assert inner.closed == 2
+    assert breaker.failure_count == 0 and breaker.state is CircuitState.CLOSED
+
+
+def test_stream_open_circuit_fails_fast(clock, fake_sleep) -> None:
+    breaker = CircuitBreaker("llm", failure_threshold=1, clock=clock)
+    inner = StreamingScriptedLLM([ExternalServiceError("400")])
+    llm = ResilientLLM(inner, breaker, POLICY, sleep=fake_sleep)
+
+    with pytest.raises(ExternalServiceError):
+        list(llm.stream(MSG))
+    with pytest.raises(CircuitOpenError):
+        list(llm.stream(MSG))
+    assert inner.opened == 1

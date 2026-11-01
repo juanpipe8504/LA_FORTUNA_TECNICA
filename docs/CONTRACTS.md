@@ -76,6 +76,20 @@ from retrieved chunks (+ `IMAGE` chunks themselves), score = chunk score /
 `has_sufficient_context` is False. Sources only include chunks actually cited
 (`[n]`) when citations are present, else all retrieved.
 
+Sufficiency is decided from evidence, not only from the marker: a reply that
+contains the marker but also substantive content (beyond the refusal
+sentence) with at least one valid `[n]` citation is treated as a partial
+grounded answer (`has_sufficient_context=True`, sources and images kept).
+Only a refusal without valid citations is insufficient.
+
+Streaming: `LLMPort.stream(messages, *, temperature, max_tokens) -> Iterator[str]`
+(non-abstract; the default yields `generate()` as one chunk; OpenAI/Ollama
+adapters stream for real). `ResilientLLM.stream` applies retry + breaker only
+until the first chunk; a later failure propagates and counts as one breaker
+failure. `AnswerQuestionUseCase.stream(question, history, document_ids)` yields
+`TokenEvent(text)`s (marker filtered out) and one `FinalEvent(answer)` equal to
+what `execute()` returns for the same LLM output.
+
 ## C. API + DI workstream
 
 | Module | Content |
@@ -104,6 +118,17 @@ POST /chat                 {"question": str, "history": [{"role":"user|assistant
              "sources":[{"chunk_id","document_id","document_name","page","score","snippet","bbox":[x0,y0,x1,y1]|null}],
              "images":[{"image_id","document_id","document_name","page","caption","bbox":[...],
                         "related_chunk_id","relevance","url":"/api/v1/documents/{document_id}/images/{image_id}"}]}
+POST /chat/stream          same body as POST /chat -> 200 text/event-stream
+     (headers Cache-Control: no-cache, X-Accel-Buffering: no). SSE events:
+       event: token   data: {"text": "<delta>"}
+              never contains [[NO_CONTEXT]]; raw model citation numbers
+       event: final   data: <exact POST /chat response JSON>
+              renumbered citations; clients replace the streamed text with it
+       event: error   data: {"error": {"code","message","request_id"}}
+              then the stream closes; same codes/messages as the JSON errors
+       ": ping" comment lines every ~15 s while waiting (keep-alive)
+     Each event is "event: <name>" + newline + "data: <one-line JSON>" + blank line.
+     Body validation errors are still a plain JSON 422 before the stream opens.
 GET  /health               -> {"status":"ok"}          (outside prefix too: /health)
 GET  /health/ready         -> checks redis + qdrant    -> 200/503
 ```

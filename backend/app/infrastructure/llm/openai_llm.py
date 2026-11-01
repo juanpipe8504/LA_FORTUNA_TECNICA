@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import base64
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from typing import Any
 
+import httpx
 import openai
 from openai import OpenAI
 
@@ -15,6 +16,7 @@ from app.domain.exceptions import ExternalServiceError
 from app.domain.models import ChatMessage, Role
 from app.domain.ports import LLMPort
 from app.infrastructure.llm.openai_errors import map_openai_error
+from app.infrastructure.resilience.retry import transient_error
 
 logger = get_logger(__name__)
 
@@ -65,13 +67,9 @@ class OpenAILLM(LLMPort):
     def supports_vision(self) -> bool:
         return True
 
-    def generate(
-        self,
-        messages: Sequence[ChatMessage],
-        *,
-        temperature: float = 0.0,
-        max_tokens: int | None = None,
-    ) -> str:
+    def _params(
+        self, messages: Sequence[ChatMessage], temperature: float, max_tokens: int | None
+    ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "model": self._model,
             "messages": [to_openai_message(m) for m in messages],
@@ -79,6 +77,16 @@ class OpenAILLM(LLMPort):
         }
         if max_tokens is not None:
             params["max_tokens"] = max_tokens
+        return params
+
+    def generate(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        temperature: float = 0.0,
+        max_tokens: int | None = None,
+    ) -> str:
+        params = self._params(messages, temperature, max_tokens)
         try:
             response = self._client.chat.completions.create(**params)
         except openai.OpenAIError as exc:
@@ -96,6 +104,36 @@ class OpenAILLM(LLMPort):
                 },
             )
         return response.choices[0].message.content or ""
+
+    def stream(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        temperature: float = 0.0,
+        max_tokens: int | None = None,
+    ) -> Iterator[str]:
+        params = self._params(messages, temperature, max_tokens)
+        try:
+            response = self._client.chat.completions.create(**params, stream=True)
+        except openai.OpenAIError as exc:
+            raise map_openai_error(exc, "chat completion stream") from exc
+        try:
+            for chunk in response:
+                for choice in getattr(chunk, "choices", None) or []:
+                    delta = getattr(choice, "delta", None)
+                    content = getattr(delta, "content", None)
+                    if content:
+                        yield content
+        except openai.OpenAIError as exc:
+            raise map_openai_error(exc, "chat completion stream") from exc
+        except httpx.TimeoutException as exc:
+            raise transient_error(f"OpenAI chat completion stream: timeout: {exc}") from exc
+        except httpx.TransportError as exc:
+            raise transient_error(f"OpenAI chat completion stream: connection error: {exc}") from exc
+        finally:
+            close = getattr(response, "close", None)
+            if callable(close):
+                close()
 
     def describe_image(self, image: bytes, *, context: str = "") -> str:
         message = ChatMessage(Role.USER, build_image_description_prompt(context), images=[image])

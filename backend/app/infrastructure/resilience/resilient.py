@@ -11,15 +11,23 @@ the circuit breaker. Rationale:
 
 Both classes implement the same port as the object they wrap (Decorator
 pattern), so the application layer is unaware of resilience concerns.
+
+Streaming (``ResilientLLM.stream``): retries and the breaker cover only the
+opening of the stream, i.e. everything up to the *first* chunk (the HTTP request
+and, for CPU models, the long prompt-evaluation phase). Once text has been
+handed to the caller the call cannot be transparently retried, so a later
+failure propagates (as ``ExternalServiceError``) and is recorded as one breaker
+failure.
 """
 
 from __future__ import annotations
 
 import random
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from typing import TypeVar
 
+from app.domain.exceptions import ExternalServiceError
 from app.domain.models import ChatMessage
 from app.domain.ports import EmbeddingPort, LLMPort
 from app.infrastructure.resilience.circuit_breaker import CircuitBreaker
@@ -75,12 +83,48 @@ class ResilientLLM(LLMPort):
             lambda: self._inner.generate(messages, temperature=temperature, max_tokens=max_tokens)
         )
 
+    def stream(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        temperature: float = 0.0,
+        max_tokens: int | None = None,
+    ) -> Iterator[str]:
+        def open_stream() -> tuple[Iterator[str], str | None]:
+            iterator = iter(self._inner.stream(messages, temperature=temperature, max_tokens=max_tokens))
+            try:
+                return iterator, next(iterator)
+            except StopIteration:
+                return iterator, None
+            except BaseException:
+                _close(iterator)
+                raise
+
+        iterator, first = self._call(open_stream)
+        try:
+            if first is None:
+                return
+            yield first
+            try:
+                yield from iterator
+            except ExternalServiceError:
+                self.breaker.record_failure()
+                raise
+        finally:
+            _close(iterator)
+
     def describe_image(self, image: bytes, *, context: str = "") -> str:
         return self._call(lambda: self._inner.describe_image(image, context=context))
 
     @property
     def supports_vision(self) -> bool:
         return self._inner.supports_vision
+
+
+def _close(iterator: Iterator[str]) -> None:
+    close = getattr(iterator, "close", None)
+    if callable(close):
+        close()
 
 
 class ResilientEmbeddings(EmbeddingPort):

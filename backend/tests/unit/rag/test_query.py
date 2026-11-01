@@ -79,7 +79,7 @@ def retrieved(make_chunk, make_image_ref) -> list[RetrievedChunk]:
         RetrievedChunk(make_chunk("c2", "Valve torque is 45 Nm.",
                                   images=[make_image_ref("img_near", 0.0, "Figure 4: valve")]), 0.5),
         RetrievedChunk(make_chunk("c3", "Diagram of the hydraulic circuit", chunk_type=ChunkType.IMAGE,
-                                  images=[make_image_ref("img_diag", 80.0, "Figure 5: circuit")]), 0.4),
+                                  images=[make_image_ref("img_diag", 0.0, "Figure 5: circuit")]), 0.4),
     ]
 
 
@@ -286,3 +286,193 @@ def test_collapse_table_hits_keeps_best_chunk_per_table_and_limit():
         hit("text-2", ChunkType.TEXT, 0.4),
     ]
     assert [h.chunk.chunk_id for h in collapse_table_hits(hits, 3)] == ["row-relub", "text-1", "other-table"]
+
+
+# --------------------------------------------------------------------------- sufficiency from evidence
+MOTOR_QUESTION = "¿Cómo se conecta el motor en estrella y en triángulo?"
+
+
+@pytest.fixture
+def motor_hits(make_chunk, make_image_ref) -> list[RetrievedChunk]:
+    """Retrieval for the star/delta question: the image closest to the text is the
+    terminal-board photo (Figura 1); the wiring diagram (Figura 2) is its own IMAGE chunk."""
+    return [
+        RetrievedChunk(make_chunk(
+            "t1", "Conexión en estrella (Y): unir los terminales U2, V2 y W2 con dos puentes. "
+                  "Ver Figura 2.", page=5,
+            images=[make_image_ref("img_fig1", 40.0, "Figura 1: placa de bornes", page=5)]), 0.9),
+        RetrievedChunk(make_chunk(
+            "t2", "Conexión en triángulo (D): unir U1-W2, V1-U2 y W1-V2 con tres puentes.", page=5), 0.8),
+        RetrievedChunk(make_chunk(
+            "img2", "Figura 2: esquema de conexión estrella-triángulo de la placa de bornes",
+            chunk_type=ChunkType.IMAGE, page=6,
+            images=[make_image_ref("img_fig2", 0.0, "", page=6),
+                    make_image_ref("img_fig3", 60.0, "Figura 3: dimensiones", page=6)]), 0.5),
+    ]
+
+
+GEMMA_PARTIAL_REPLY = (
+    f"{INSUFFICIENT_CONTEXT_MARKER} El documento no contiene información suficiente para detallar "
+    "los procedimientos de montaje. Sin embargo, sí indica cómo conectar el motor:\n\n"
+    "* **Estrella (Y):** se unen los terminales U2, V2 y W2 con dos puentes [1].\n"
+    "* **Triángulo (D):** se unen U1-W2, V1-U2 y W1-V2 con tres puentes [2].\n\n"
+    "Puedes ver el esquema en la Figura 2 [3]."
+)
+
+
+def test_marker_with_citations_and_content_is_a_grounded_partial_answer(motor_hits) -> None:
+    use_case, _, _ = _use_case(motor_hits, reply=GEMMA_PARTIAL_REPLY)
+    answer = use_case.execute(MOTOR_QUESTION)
+
+    assert answer.has_sufficient_context is True
+    assert INSUFFICIENT_CONTEXT_MARKER not in answer.text
+    assert [s.chunk_id for s in answer.sources] == ["t1", "t2", "img2"]
+    assert answer.images, "a grounded answer must keep its figures"
+
+
+def test_figure_mentioned_in_answer_wins_over_closest_image(motor_hits) -> None:
+    use_case, _, _ = _use_case(motor_hits, reply=GEMMA_PARTIAL_REPLY)
+    answer = use_case.execute(MOTOR_QUESTION)
+
+    assert answer.images[0].image_id == "img_fig2"
+    assert answer.images[0].related_chunk_id == "img2"
+    assert answer.images[0].caption.startswith("Figura 2")  # falls back to the IMAGE chunk text
+
+
+def test_figure_number_boost_without_citation_of_the_image_chunk(motor_hits) -> None:
+    images = rank_images(motor_hits, cited=[1, 2], answer_text="Ver la Figura 2 para el esquema.",
+                         max_images=3)
+    assert images[0].image_id == "img_fig2"
+    # neighbouring images of an IMAGE chunk keep their real distance (no own-figure bonus)
+    assert images[-1].image_id == "img_fig3"
+
+
+def test_marker_without_citations_is_insufficient_without_images(motor_hits) -> None:
+    reply = (
+        f"{INSUFFICIENT_CONTEXT_MARKER} No tengo suficiente información en los documentos para "
+        "responder a eso. El manual describe otros aspectos del motor que no están relacionados "
+        "con la pregunta planteada por el usuario."
+    )
+    use_case, _, _ = _use_case(motor_hits, reply=reply)
+    answer = use_case.execute(MOTOR_QUESTION)
+
+    assert answer.has_sufficient_context is False
+    assert answer.images == []
+    assert answer.text.startswith("No tengo suficiente")
+
+
+def test_lenient_marker_variants_are_stripped(retrieved) -> None:
+    use_case, _, _ = _use_case(retrieved, reply="[NO_CONTEXT] I don't have enough information.")
+    answer = use_case.execute("What is the flow rate?")
+    assert answer.text == "I don't have enough information."
+    assert answer.has_sufficient_context is False
+
+
+def test_is_grounded_answer_rules() -> None:
+    from app.application.query import is_grounded_answer
+
+    assert is_grounded_answer("Pressure is 250 bar.", had_marker=False, n_blocks=1) is True
+    assert is_grounded_answer("", had_marker=False, n_blocks=1) is False
+    cited = "La presión máxima de trabajo de la bomba es de 250 bar según la tabla de datos técnicos [1]."
+    assert is_grounded_answer("No tengo suficiente información. " + cited, True, 1) is True
+    # the only citation is inside the refusal sentence -> still a refusal
+    assert is_grounded_answer("No tengo suficiente información sobre eso [1].", True, 1) is False
+    # an invalid citation number is not evidence
+    invalid = "No tengo suficiente información. " + cited.replace("[1]", "[7]")
+    assert is_grounded_answer(invalid, True, 1) is False
+
+
+# --------------------------------------------------------------------------- streaming
+class StreamingLLM(FakeLLM):
+    def __init__(self, chunks: list[str]) -> None:
+        super().__init__("".join(chunks))
+        self.chunks = chunks
+
+    def stream(self, messages, *, temperature=0.0, max_tokens=None):
+        self.calls += 1
+        self.messages = list(messages)
+        yield from self.chunks
+
+
+def _stream_events(results, chunks, question="q"):
+    from app.application.query import FinalEvent, TokenEvent
+
+    llm = StreamingLLM(chunks)
+    use_case = AnswerQuestionUseCase(FakeEmbeddings(), FakeStore(results), llm)
+    events = list(use_case.stream(question))
+    tokens = [e.text for e in events if isinstance(e, TokenEvent)]
+    finals = [e.answer for e in events if isinstance(e, FinalEvent)]
+    assert len(finals) == 1 and isinstance(events[-1], FinalEvent)
+    return tokens, finals[0]
+
+
+_MARKER_LEN = len(INSUFFICIENT_CONTEXT_MARKER)
+
+
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        [GEMMA_PARTIAL_REPLY],
+        list(GEMMA_PARTIAL_REPLY),  # one character per chunk: the marker is split everywhere
+        ["  [", "[NO_", "CONTEXT", "]] El", GEMMA_PARTIAL_REPLY[_MARKER_LEN + 3 :]],
+    ],
+    ids=["single", "char-by-char", "split-marker"],
+)
+def test_stream_never_leaks_marker_and_final_equals_execute(motor_hits, chunks) -> None:
+    tokens, final = _stream_events(motor_hits, chunks, MOTOR_QUESTION)
+    streamed = "".join(tokens)
+
+    assert all("NO_CONTEXT" not in t for t in tokens)
+    assert "NO_CONTEXT" not in streamed and streamed.startswith("El documento")
+    expected = _use_case(motor_hits, reply="".join(chunks))[0].execute(MOTOR_QUESTION)
+    assert final == expected
+    assert final.has_sufficient_context is True and final.images[0].image_id == "img_fig2"
+
+
+def test_stream_keeps_citation_brackets(retrieved) -> None:
+    tokens, final = _stream_events(retrieved, ["Max pressure is 250 bar [", "1", "]", "."])
+    assert "".join(tokens) == "Max pressure is 250 bar [1]."
+    assert final.text == "Max pressure is 250 bar [1]."
+
+
+def test_stream_marker_only_emits_fallback_token(retrieved) -> None:
+    tokens, final = _stream_events(retrieved, ["[[NO_CONTEXT]]", "  "], "What is the flow rate?")
+    assert tokens == [NO_INFO_EN]
+    assert final.text == NO_INFO_EN and final.has_sufficient_context is False
+
+
+def test_stream_without_retrieval_does_not_call_llm() -> None:
+    llm = StreamingLLM(["unused"])
+    use_case = AnswerQuestionUseCase(FakeEmbeddings(), FakeStore([]), llm)
+    events = list(use_case.stream("¿Cuál es la presión máxima de la bomba?"))
+    assert llm.calls == 0
+    assert [type(e).__name__ for e in events] == ["TokenEvent", "FinalEvent"]
+    assert events[0].text == NO_INFO_ES
+    assert events[1].answer.has_sufficient_context is False
+
+
+def test_stream_validates_question_lazily(retrieved) -> None:
+    use_case, _, _ = _use_case(retrieved)
+    events = use_case.stream("  ")
+    with pytest.raises(ValidationError):
+        next(events)
+
+
+def test_default_port_stream_yields_generate_result(retrieved) -> None:
+    # FakeLLM does not override stream(): the LLMPort default wraps generate().
+    use_case, llm, _ = _use_case(retrieved, reply="Answer [2].")
+    events = list(use_case.stream("q"))
+    assert events[0].text == "Answer [2]."
+    assert events[-1].answer.text == "Answer [1]."  # renumbered in the final event
+    assert llm.calls == 1
+
+
+def test_marker_filter_releases_long_bracket_runs() -> None:
+    from app.application.query import MarkerFilter
+
+    marker_filter = MarkerFilter()
+    out = marker_filter.feed("see [")
+    assert out == "see "
+    out += marker_filter.feed("this is not a marker at all, just text")
+    assert out == "see [this is not a marker at all, just text"
+    assert marker_filter.flush() == ""

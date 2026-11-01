@@ -140,6 +140,15 @@ class CircuitBreaker:
         self._on_success()
         return result
 
+    def record_failure(self) -> None:
+        """Count a dependency failure observed outside :meth:`call`.
+
+        Used for streamed responses: :meth:`call` only covers opening the stream
+        (up to the first chunk), so a failure in the middle of the stream is
+        reported here.
+        """
+        self._on_failure(is_trial=False)
+
     def reset(self) -> None:
         with self._lock:
             self._failures = 0
