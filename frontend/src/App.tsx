@@ -80,12 +80,14 @@ export default function App() {
           <ChatPanel
             messages={chat.messages}
             pending={chat.pending}
+            phase={chat.phase}
             error={chat.error}
             scopeLabel={scopeLabel}
             hasDocuments={docs.documents.length > 0}
             onSend={(q) => void chat.send(q, scopeIds)}
             onRetry={chat.retry}
             onDismissError={chat.dismissError}
+            onStop={chat.stop}
           />
         </main>
       </div>

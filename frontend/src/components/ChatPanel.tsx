@@ -1,17 +1,24 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import type { ChatError, Message } from "../hooks/useChat";
+import type { ChatError, ChatPhase, Message } from "../hooks/useChat";
 import { AssistantMessageView } from "./AssistantMessageView";
 
 interface Props {
   messages: Message[];
   pending: boolean;
+  /** Defaults to "waiting" while pending (non-streaming callers). */
+  phase?: ChatPhase;
   error: ChatError | null;
   scopeLabel: string;
   hasDocuments: boolean;
   onSend: (question: string) => void;
   onRetry: () => void;
   onDismissError: () => void;
+  /** Aborts the in-flight answer; when provided a "Detener" button replaces "Enviar" while pending. */
+  onStop?: () => void;
 }
+
+/** Distance (px) from the bottom under which the list keeps following new content. */
+const STICK_THRESHOLD = 80;
 
 const SUGGESTIONS = [
   "¿De qué trata el documento? Resume los puntos clave.",
@@ -37,16 +44,49 @@ function TypingIndicator() {
   );
 }
 
-export function ChatPanel({ messages, pending, error, scopeLabel, hasDocuments, onSend, onRetry, onDismissError }: Props) {
+export function ChatPanel({
+  messages,
+  pending,
+  phase = pending ? "waiting" : "idle",
+  error,
+  scopeLabel,
+  hasDocuments,
+  onSend,
+  onRetry,
+  onDismissError,
+  onStop,
+}: Props) {
   const [draft, setDraft] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Auto-scroll on new messages / pending state / errors.
+  // Auto-scroll: follow new messages and streamed text, unless the user scrolled up to read.
+  const stickRef = useRef(true);
+  const lastScrollTop = useRef(0);
+  const onScroll = () => {
+    const el = listRef.current;
+    if (!el) return;
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (distance <= STICK_THRESHOLD) stickRef.current = true;
+    else if (el.scrollTop < lastScrollTop.current) stickRef.current = false; // user scrolled up
+    lastScrollTop.current = el.scrollTop;
+  };
+
+  // New message / phase change / error: smooth scroll to the end.
   useEffect(() => {
+    if (!stickRef.current) return;
     endRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" });
-  }, [messages.length, pending, error]);
+  }, [messages.length, phase, error]);
+
+  // Streaming text grows the last message: jump (not animate) so we never fight the user.
+  const lastContent = messages.length > 0 ? messages[messages.length - 1].content : "";
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el || phase !== "streaming" || !stickRef.current) return;
+    el.scrollTop = el.scrollHeight;
+    lastScrollTop.current = el.scrollTop;
+  }, [lastContent, phase]);
 
   // Auto-grow textarea.
   useLayoutEffect(() => {
@@ -61,6 +101,7 @@ export function ChatPanel({ messages, pending, error, scopeLabel, hasDocuments, 
   const submit = (e?: FormEvent) => {
     e?.preventDefault();
     if (!canSend) return;
+    stickRef.current = true; // sending always brings the conversation back into view
     onSend(draft.trim());
     setDraft("");
   };
@@ -74,7 +115,7 @@ export function ChatPanel({ messages, pending, error, scopeLabel, hasDocuments, 
 
   return (
     <section className="chat" aria-label="Conversación">
-      <div className="chat__messages" ref={listRef} aria-live="polite" aria-busy={pending}>
+      <div className="chat__messages" ref={listRef} onScroll={onScroll} aria-live="polite" aria-busy={pending}>
         {messages.length === 0 && !pending && (
           <div className="empty-state">
             <h2>Pregunta a tus documentos</h2>
@@ -112,7 +153,7 @@ export function ChatPanel({ messages, pending, error, scopeLabel, hasDocuments, 
           ),
         )}
 
-        {pending && <TypingIndicator />}
+        {phase === "waiting" && <TypingIndicator />}
 
         {error && !pending && (
           <div className="error-banner" role="alert">
@@ -154,10 +195,22 @@ export function ChatPanel({ messages, pending, error, scopeLabel, hasDocuments, 
             onKeyDown={onKeyDown}
             maxLength={4000}
           />
-          <button type="submit" className="button button--primary composer__send" disabled={!canSend} aria-label="Enviar pregunta">
-            {pending ? <span className="spinner" aria-hidden="true" /> : <span aria-hidden="true">➤</span>}
-            <span className="composer__send-text">{pending ? "Enviando" : "Enviar"}</span>
-          </button>
+          {pending && onStop ? (
+            <button
+              type="button"
+              className="button button--ghost composer__send composer__stop"
+              onClick={onStop}
+              aria-label="Detener la generación"
+            >
+              <span className="composer__stop-icon" aria-hidden="true" />
+              <span className="composer__send-text">Detener</span>
+            </button>
+          ) : (
+            <button type="submit" className="button button--primary composer__send" disabled={!canSend} aria-label="Enviar pregunta">
+              {pending ? <span className="spinner" aria-hidden="true" /> : <span aria-hidden="true">➤</span>}
+              <span className="composer__send-text">{pending ? "Enviando" : "Enviar"}</span>
+            </button>
+          )}
         </div>
       </form>
     </section>

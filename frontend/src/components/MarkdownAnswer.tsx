@@ -9,7 +9,12 @@ interface Props {
   sources: SourceCitation[];
   citationToSource: Map<number, number>;
   onCite: (sourceIndex: number) => void;
+  /** When false (answer still streaming), `[n]` stays plain text instead of becoming a badge. */
+  linkCitations?: boolean;
 }
+
+const PLUGINS_WITH_CITATIONS = [remarkGfm, remarkCitations];
+const PLUGINS_PLAIN = [remarkGfm];
 
 function CitationBadge({
   n,
@@ -37,7 +42,7 @@ function CitationBadge({
   );
 }
 
-function MarkdownAnswerImpl({ content, sources, citationToSource, onCite }: Props) {
+function MarkdownAnswerImpl({ content, sources, citationToSource, onCite, linkCitations = true }: Props) {
   const components: Components = {
     a({ href, children, node: _node, ...rest }: ComponentProps<"a"> & { node?: unknown }) {
       if (href?.startsWith(CITE_HREF_PREFIX)) {
@@ -72,7 +77,7 @@ function MarkdownAnswerImpl({ content, sources, citationToSource, onCite }: Prop
 
   return (
     <div className="markdown">
-      <ReactMarkdown remarkPlugins={[remarkGfm, remarkCitations]} components={components}>
+      <ReactMarkdown remarkPlugins={linkCitations ? PLUGINS_WITH_CITATIONS : PLUGINS_PLAIN} components={components}>
         {content}
       </ReactMarkdown>
     </div>

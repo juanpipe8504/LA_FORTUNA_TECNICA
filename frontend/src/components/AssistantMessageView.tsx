@@ -1,5 +1,6 @@
+import type { ImageCitation, SourceCitation } from "../api/types";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AssistantMessage } from "../hooks/useChat";
+import { isFinalMessage, type AssistantMessage } from "../hooks/useChat";
 import { buildCitationMap, cleanAnswer } from "../lib/citations";
 import { plural } from "../lib/format";
 import { FigureCard } from "./FigureCard";
@@ -7,17 +8,23 @@ import { Lightbox } from "./Lightbox";
 import { MarkdownAnswer } from "./MarkdownAnswer";
 import { SourcesList, sourceDomId } from "./SourcesList";
 
+const NO_SOURCES: SourceCitation[] = [];
+const NO_IMAGES: ImageCitation[] = [];
+
 interface Props {
   message: AssistantMessage;
 }
 
 export function AssistantMessageView({ message }: Props) {
   const { response } = message;
-  const sources = useMemo(() => response.sources ?? [], [response.sources]);
+  const final = isFinalMessage(message);
+  const streaming = message.status === "streaming";
+  // Sources / figures / citation links only exist once the final answer has arrived.
+  const sources = useMemo(() => (final ? response.sources ?? [] : NO_SOURCES), [final, response.sources]);
   // Visual context is only meaningful when the answer is grounded.
   const images = useMemo(
-    () => (response.has_sufficient_context ? response.images ?? [] : []),
-    [response.has_sufficient_context, response.images],
+    () => (final && response.has_sufficient_context ? response.images ?? [] : NO_IMAGES),
+    [final, response.has_sufficient_context, response.images],
   );
   const content = useMemo(() => cleanAnswer(message.content), [message.content]);
   const { toSource, toCitation } = useMemo(() => buildCitationMap(content, sources.length), [content, sources.length]);
@@ -43,13 +50,16 @@ export function AssistantMessageView({ message }: Props) {
     [message.id],
   );
 
-  const insufficient = !response.has_sufficient_context;
+  const insufficient = final && !response.has_sufficient_context;
   const withVisual = images.length > 0;
 
   return (
     <article
-      className={`message message--assistant${insufficient ? " message--insufficient" : ""}`}
+      className={`message message--assistant${insufficient ? " message--insufficient" : ""}${
+        streaming ? " message--streaming" : ""
+      }`}
       aria-label="Respuesta del asistente"
+      aria-busy={streaming || undefined}
     >
       <div className="avatar avatar--assistant" aria-hidden="true">
         IA
@@ -67,7 +77,17 @@ export function AssistantMessageView({ message }: Props) {
 
         <div className={`answer${withVisual ? " answer--with-visual" : ""}`}>
           <div className="answer__text">
-            <MarkdownAnswer content={content} sources={sources} citationToSource={toSource} onCite={focusSource} />
+            {content ? (
+              <MarkdownAnswer
+                content={content}
+                sources={sources}
+                citationToSource={toSource}
+                onCite={focusSource}
+                linkCitations={final}
+              />
+            ) : (
+              message.status === "interrupted" && <p className="answer__empty">Generación detenida antes de recibir texto.</p>
+            )}
           </div>
 
           {withVisual && (
@@ -90,6 +110,23 @@ export function AssistantMessageView({ message }: Props) {
             </aside>
           )}
         </div>
+
+        {streaming && (
+          <div className="stream-status" role="status">
+            <span className="stream-status__pulse" aria-hidden="true" />
+            Generando… <span className="stream-status__hint">Las fuentes y figuras aparecerán al terminar.</span>
+          </div>
+        )}
+        {message.status === "interrupted" && (
+          <div className="stream-status stream-status--stopped" role="note">
+            <span aria-hidden="true">■</span> Respuesta interrumpida
+          </div>
+        )}
+        {message.status === "error" && (
+          <div className="stream-status stream-status--error" role="note">
+            <span aria-hidden="true">⚠️</span> Respuesta incompleta: la generación falló.
+          </div>
+        )}
 
         <SourcesList
           messageId={message.id}

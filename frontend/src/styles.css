@@ -661,6 +661,83 @@ textarea {
   }
 }
 
+/* Streaming status (shown under the answer while tokens arrive / after stop or failure) */
+.stream-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+  margin-top: 0.6rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+.stream-status__hint {
+  opacity: 0.8;
+}
+.stream-status__pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--primary);
+  animation: pulse 1.2s infinite ease-in-out;
+}
+.stream-status--stopped {
+  color: var(--text-muted);
+  font-style: italic;
+}
+.stream-status--error {
+  color: var(--danger);
+}
+.answer__empty {
+  margin: 0;
+  color: var(--text-muted);
+  font-style: italic;
+}
+/* Blinking caret at the end of the streamed text. */
+.message--streaming .markdown > :last-child::after {
+  content: "";
+  display: inline-block;
+  width: 0.5em;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--primary);
+  opacity: 0.6;
+  animation: caret 1s steps(2, start) infinite;
+}
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes caret {
+  to {
+    visibility: hidden;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .stream-status__pulse,
+  .message--streaming .markdown > :last-child::after {
+    animation: none;
+  }
+}
+
+.composer__stop {
+  border: 1px solid var(--border);
+}
+.composer__stop-icon {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 2px;
+  background: currentColor;
+}
+
 .error-banner {
   display: flex;
   gap: 0.75rem;
