@@ -168,5 +168,9 @@ def test_ingest_task_delegates_to_process_document_use_case():
     fake_module = MagicMock(get_container=MagicMock(return_value=container))
     with patch.dict("sys.modules", {"app.bootstrap.container": fake_module}):
         ingest_document.apply(args=["job-7"]).get()
-    container.process_document.execute.assert_called_once_with("job-7")
+    from celery.exceptions import SoftTimeLimitExceeded
+
+    container.process_document.execute.assert_called_once_with(
+        "job-7", interrupt_errors=(SoftTimeLimitExceeded,)
+    )
     assert ingest_document.name == "ingestion.ingest_document"

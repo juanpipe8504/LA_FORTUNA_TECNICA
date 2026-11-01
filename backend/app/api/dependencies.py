@@ -18,6 +18,7 @@ from app.domain.ports import BlobStoragePort, JobRepositoryPort
 if TYPE_CHECKING:  # pragma: no cover - typing only; keeps the API import graph light
     from app.application.documents import ListDocumentsUseCase
     from app.application.ingestion import SubmitDocumentUseCase
+    from app.application.jobs import GetJobUseCase
     from app.application.query import AnswerQuestionUseCase
 
 
@@ -43,6 +44,10 @@ def get_list_documents(container: ContainerDep) -> ListDocumentsUseCase:
     return container.list_documents
 
 
+def get_get_job(container: ContainerDep) -> GetJobUseCase:
+    return container.get_job
+
+
 def get_answer_question(container: ContainerDep) -> AnswerQuestionUseCase:
     return container.answer_question
 
@@ -62,6 +67,7 @@ def get_health_checks(container: ContainerDep) -> dict[str, HealthCheck]:
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 SubmitDocumentDep = Annotated["SubmitDocumentUseCase", Depends(get_submit_document)]
 ListDocumentsDep = Annotated["ListDocumentsUseCase", Depends(get_list_documents)]
+GetJobDep = Annotated["GetJobUseCase", Depends(get_get_job)]
 AnswerQuestionDep = Annotated["AnswerQuestionUseCase", Depends(get_answer_question)]
 JobRepositoryDep = Annotated[JobRepositoryPort, Depends(get_job_repository)]
 BlobStorageDep = Annotated[BlobStoragePort, Depends(get_blob_storage)]

@@ -7,6 +7,18 @@ the HTTP request returns immediately (202).
 ``ProcessDocumentUseCase`` runs in the Celery worker: parse -> chunk ->
 (optionally) describe images with a vision LLM -> embed -> index, reporting
 progress on the job so clients can poll ``GET /jobs/{id}``.
+
+Bounded execution (see ADR 0009):
+
+- The optional describe-images step has a per-document time budget and stops
+  after N consecutive failures or as soon as the LLM circuit is open; the
+  document is still indexed with the captions found in the PDF.
+- The caller (Celery task) can pass ``interrupt_errors``: exception types that
+  must never be swallowed (e.g. Celery's ``SoftTimeLimitExceeded``). They
+  propagate untouched and the caller records the outcome with
+  ``mark_timed_out`` / ``mark_failed``. The use case never imports Celery.
+- Re-delivery (at-least-once): COMPLETED and FAILED jobs are terminal and
+  skipped; PENDING/PROCESSING jobs are (re)processed from scratch.
 """
 
 from __future__ import annotations
@@ -14,11 +26,11 @@ from __future__ import annotations
 import os
 import time
 import uuid
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 
 from app.core.logging import bind_context, get_logger
-from app.domain.exceptions import DomainError, ExternalServiceError, ValidationError
+from app.domain.exceptions import CircuitOpenError, DomainError, ExternalServiceError, ValidationError
 from app.domain.models import (
     Chunk,
     ChunkType,
@@ -43,6 +55,11 @@ logger = get_logger(__name__)
 _PDF_MAGIC = b"%PDF-"
 _MAX_FILENAME_LENGTH = 255
 _MAX_ERROR_LENGTH = 500
+
+TIME_LIMIT_ERROR = (
+    "Tiempo máximo de procesamiento excedido. El documento tardó demasiado en procesarse; "
+    "vuelve a subirlo o desactiva la descripción de imágenes."
+)
 
 
 class SubmitDocumentUseCase:
@@ -128,9 +145,15 @@ class ProcessDocumentUseCase:
         blob_storage: BlobStoragePort | None = None,
         describe_images: bool = False,
         batch_size: int = 32,
+        *,
+        describe_images_budget_seconds: float | None = 600.0,
+        describe_images_max_consecutive_failures: int = 2,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if batch_size < 1:
             raise ValueError("batch_size must be >= 1")
+        if describe_images_max_consecutive_failures < 1:
+            raise ValueError("describe_images_max_consecutive_failures must be >= 1")
         self._parser = parser
         self._chunker = chunker
         self._embeddings = embeddings
@@ -140,26 +163,58 @@ class ProcessDocumentUseCase:
         self._blob_storage = blob_storage
         self._describe_images = describe_images
         self._batch_size = batch_size
+        self._describe_budget = describe_images_budget_seconds
+        self._describe_max_failures = describe_images_max_consecutive_failures
+        self._clock = clock
 
-    def execute(self, job_id: str) -> None:
-        """Process a job. Never raises: failures are recorded on the job."""
+    def execute(self, job_id: str, *, interrupt_errors: tuple[type[BaseException], ...] = ()) -> None:
+        """Process a job. Failures are recorded on the job and not raised, except
+        ``interrupt_errors`` (e.g. a time-limit signal), which always propagate."""
         with bind_context(job_id=job_id):
             try:
                 job = self._jobs.get(job_id)
             except Exception:
                 logger.exception("job_not_loadable")
                 return
-            if job.status == JobStatus.COMPLETED:
+            if job.status in (JobStatus.COMPLETED, JobStatus.FAILED):
                 # At-least-once delivery (acks_late) can redeliver a finished job.
-                logger.info("job_already_completed_skipping")
+                # Both are terminal: a FAILED job is never resurrected silently.
+                logger.info("job_already_finished_skipping", extra={"status": job.status.value})
                 return
+            if job.status == JobStatus.PROCESSING:
+                # The previous worker was lost mid-run (crash, OOM, host slept) and
+                # the broker re-delivered the task. Restart from scratch: indexing
+                # is idempotent per document_id.
+                logger.warning("job_redelivered_restarting", extra={"previous_progress": job.progress})
+                job.progress, job.message = 0, "Restarting after an interruption"
             with bind_context(document_id=job.document_id):
-                self._run(job)
+                self._run(job, interrupt_errors)
+
+    def mark_failed(self, job_id: str, error: str) -> None:
+        """Record a failure decided outside the pipeline (e.g. a time limit).
+        A job that already COMPLETED is left untouched. Never raises."""
+        with bind_context(job_id=job_id):
+            try:
+                job = self._jobs.get(job_id)
+                if job.status == JobStatus.COMPLETED:
+                    logger.info("mark_failed_ignored_job_completed")
+                    return
+                job.status = JobStatus.FAILED
+                job.error = error[:_MAX_ERROR_LENGTH]
+                job.message = "Failed"
+                self._jobs.update(job)
+                logger.error("ingestion_failed", extra={"progress": job.progress, "error": job.error})
+            except Exception:
+                logger.exception("job_failure_not_persisted")
+
+    def mark_timed_out(self, job_id: str) -> None:
+        """The run exceeded the processing time limit."""
+        self.mark_failed(job_id, TIME_LIMIT_ERROR)
 
     # ------------------------------------------------------------------ #
     # Pipeline
     # ------------------------------------------------------------------ #
-    def _run(self, job: IngestionJob) -> None:
+    def _run(self, job: IngestionJob, interrupt_errors: tuple[type[BaseException], ...] = ()) -> None:
         timings: dict[str, float] = {}
         started = time.perf_counter()
         job.status, job.error = JobStatus.PROCESSING, None
@@ -181,7 +236,7 @@ class ProcessDocumentUseCase:
             if self._should_describe_images(document):
                 self._progress(job, self.DESCRIBING_START, "Describing images")
                 with self._timed(timings, "describe_ms"):
-                    self._enrich_images(job, document, chunks)
+                    self._enrich_images(job, document, chunks, interrupt_errors)
 
             self._progress(job, self.EMBEDDING_START, "Generating embeddings")
             with self._timed(timings, "embed_ms"):
@@ -206,6 +261,8 @@ class ProcessDocumentUseCase:
                 },
             )
         except Exception as exc:
+            if isinstance(exc, interrupt_errors):
+                raise  # the caller records the outcome (e.g. mark_timed_out)
             self._fail(job, exc, timings)
 
     def _fail(self, job: IngestionJob, exc: Exception, timings: dict[str, float]) -> None:
@@ -254,34 +311,78 @@ class ProcessDocumentUseCase:
             and self._llm.supports_vision
         )
 
-    def _enrich_images(self, job: IngestionJob, document: ParsedDocument, chunks: list[Chunk]) -> None:
-        """Caption every image with the vision LLM. A failing image is logged and
-        skipped – a missing description must never fail the whole document."""
+    def _enrich_images(
+        self,
+        job: IngestionJob,
+        document: ParsedDocument,
+        chunks: list[Chunk],
+        interrupt_errors: tuple[type[BaseException], ...] = (),
+    ) -> None:
+        """Caption images with the vision LLM, best effort and bounded.
+
+        A failing image is logged and skipped: a missing description must never
+        fail the whole document. The step stops early (remaining images keep
+        their PDF captions) when the time budget is spent, after
+        ``describe_images_max_consecutive_failures`` failures in a row, or as
+        soon as the LLM circuit breaker is open.
+        """
         if self._llm is None or self._blob_storage is None:
             return
         image_chunks = self._image_chunks_by_id(chunks)
         total = len(document.images)
         span = self.EMBEDDING_START - self.DESCRIBING_START
-        described = 0
+        started = self._clock()
+        described = failures = 0
+        stop_reason: str | None = None
         for index, asset in enumerate(document.images, start=1):
+            if stop_reason is None and self._budget_spent(started):
+                stop_reason = "time budget exceeded"
+            if stop_reason is not None:
+                self._skip_remaining_images(job, stop_reason, remaining=total - index + 1)
+                break
+            # Heartbeat: refreshes updated_at before each (potentially long) LLM call.
+            self._progress(job, job.progress, f"Describing image {index}/{total}")
             chunk = image_chunks.get(asset.image_id)
             try:
                 data, _ = self._blob_storage.get_image(asset.document_id, asset.image_id)
                 context = self._image_context(asset, chunk)
                 description = self._llm.describe_image(data, context=context).strip()
             except Exception as exc:
+                if isinstance(exc, interrupt_errors):
+                    raise
                 logger.warning(
                     "image_description_failed",
                     extra={"image_id": asset.image_id, "error": f"{type(exc).__name__}: {exc}"},
                 )
                 description = ""
+                failures += 1
+                if isinstance(exc, CircuitOpenError):
+                    stop_reason = "vision model unavailable"
+                elif failures >= self._describe_max_failures:
+                    stop_reason = f"{failures} consecutive failures"
+            else:
+                failures = 0
             if description:
                 self._apply_description(asset, description, chunk, chunks)
                 described += 1
             new_progress = self.DESCRIBING_START + int(span * index / total)
             if new_progress > job.progress:
                 self._progress(job, new_progress, f"Describing images ({index}/{total})")
-        logger.info("images_described", extra={"described": described, "total": total})
+        logger.info(
+            "images_described",
+            extra={"described": described, "total": total, "stopped": stop_reason},
+        )
+
+    def _budget_spent(self, started: float) -> bool:
+        return self._describe_budget is not None and self._clock() - started >= self._describe_budget
+
+    def _skip_remaining_images(self, job: IngestionJob, reason: str, *, remaining: int) -> None:
+        logger.warning("image_descriptions_skipped", extra={"reason": reason, "remaining": remaining})
+        self._progress(
+            job,
+            job.progress,
+            f"Skipping {remaining} image description(s) ({reason}); using PDF captions",
+        )
 
     @staticmethod
     def _image_chunks_by_id(chunks: list[Chunk]) -> dict[str, Chunk]:

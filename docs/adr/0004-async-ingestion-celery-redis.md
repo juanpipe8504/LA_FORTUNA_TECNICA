@@ -20,7 +20,9 @@ indexado) tarda de segundos a minutos. Hacerlo dentro de la petición HTTP bloqu
 - `GET /api/v1/jobs/{job_id}` lee el estado de Redis (TTL 7 días). El frontend hace *polling*.
 - Fiabilidad de Celery (`app/infrastructure/queue/celery_app.py`): `task_acks_late`,
   `task_reject_on_worker_lost`, `worker_prefetch_multiplier=1` (tareas largas y pesadas en CPU),
-  serialización JSON.
+  serialización JSON. Límites de tiempo por tarea (*soft*/*hard*), `visibility_timeout` mayor que el
+  límite duro, presupuesto para la descripción de imágenes y *watchdog* de jobs huérfanos: ver
+  [ADR 0009](0009-bounded-self-healing-ingestion-jobs.md).
 - Redis cumple doble rol (broker + repositorio de jobs) para minimizar piezas; con `appendonly yes`.
 - El estado del job **no** depende del *result backend* de Celery: es un puerto propio
   (`JobRepositoryPort`), testeable con `InMemoryJobRepository`.

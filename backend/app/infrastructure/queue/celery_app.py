@@ -6,6 +6,12 @@ Reliability settings: tasks are acknowledged *after* they finish
 (``acks_late``) and re-queued if the worker process dies
 (``task_reject_on_worker_lost``); prefetch is 1 because ingestion tasks are
 long and CPU-heavy, so a worker never hoards jobs another worker could run.
+
+Bounded execution: every ingestion task has a soft time limit (raises
+``SoftTimeLimitExceeded`` inside the task -> the job is marked FAILED) and a
+hard one (the child process is killed). The Redis ``visibility_timeout`` is
+larger than the hard limit, so an unacknowledged (acks_late) task is only
+re-delivered when its worker was genuinely lost, never while it still runs.
 """
 
 from __future__ import annotations
@@ -46,6 +52,11 @@ def create_celery_app() -> Celery:
         enable_utc=True,
         # Celery would otherwise replace our structured log handlers.
         worker_hijack_root_logger=False,
+        # Time limits (also set on the task itself, see tasks.py).
+        task_soft_time_limit=settings.ingestion_soft_time_limit_seconds,
+        task_time_limit=settings.ingestion_hard_time_limit_seconds,
+        broker_transport_options={"visibility_timeout": settings.broker_visibility_timeout_seconds},
+        result_backend_transport_options={"visibility_timeout": settings.broker_visibility_timeout_seconds},
     )
     return app
 

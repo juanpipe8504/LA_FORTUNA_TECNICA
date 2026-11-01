@@ -10,7 +10,7 @@ import os
 from enum import Enum
 from functools import lru_cache
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -39,6 +39,10 @@ BM25_LANGUAGES = frozenset(
         "spanish", "swedish", "tamil", "turkish",
     }
 )
+
+
+# Extra seconds on top of the hard time limit before the broker re-delivers a task.
+BROKER_VISIBILITY_MARGIN_SECONDS = 300
 
 
 def _env_files() -> tuple[str, ...]:
@@ -94,6 +98,22 @@ class Settings(BaseSettings):
     min_image_size_px: int = 64  # skip icons / decorations
     image_link_max_distance: float = 150.0  # PDF points
     describe_images: bool = True  # caption images with the vision LLM if available
+    # Wall-clock budget for the optional describe-images step of ONE document;
+    # once exceeded the remaining images keep their PDF captions only.
+    describe_images_budget_seconds: float = Field(default=600.0, gt=0)
+    # Stop describing after this many consecutive failures (e.g. Ollama cannot
+    # load the vision model); an open circuit breaker stops it immediately.
+    describe_images_max_consecutive_failures: int = Field(default=2, ge=1)
+
+    # --- Ingestion job bounds (Celery worker) -----------------------------
+    # Soft limit raises inside the task so the job is marked FAILED cleanly;
+    # the hard limit kills the worker process if that cleanup itself hangs.
+    ingestion_soft_time_limit_seconds: int = Field(default=1800, gt=0)
+    ingestion_hard_time_limit_seconds: int = Field(default=1900, gt=0)
+    # A PROCESSING job whose last progress update is older than this is
+    # reported as FAILED (worker lost / host slept). Must exceed the longest
+    # single step without a progress update (one LLM call incl. retries).
+    job_stale_after_seconds: int = Field(default=900, gt=0)
 
     # --- Retrieval -------------------------------------------------------
     retrieval_top_k: int = 6
@@ -117,6 +137,22 @@ class Settings(BaseSettings):
                 f"Unsupported BM25_LANGUAGE '{value}'. Use one of: {', '.join(sorted(BM25_LANGUAGES))}"
             )
         return language
+
+    @model_validator(mode="after")
+    def _check_time_limits(self) -> Settings:
+        if self.ingestion_hard_time_limit_seconds <= self.ingestion_soft_time_limit_seconds:
+            raise ValueError(
+                "INGESTION_HARD_TIME_LIMIT_SECONDS must be greater than INGESTION_SOFT_TIME_LIMIT_SECONDS "
+                "(the gap is the time left to mark the job as failed)"
+            )
+        return self
+
+    @property
+    def broker_visibility_timeout_seconds(self) -> int:
+        """Redis re-delivers an unacked (acks_late) task after this long. It must
+        exceed the hard time limit, otherwise a long but healthy task would be
+        handed to a second worker while the first is still running it."""
+        return self.ingestion_hard_time_limit_seconds + BROKER_VISIBILITY_MARGIN_SECONDS
 
     @property
     def uploads_dir(self) -> str:

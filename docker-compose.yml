@@ -71,6 +71,10 @@ services:
     # Reuse the image built by `api` (building the same tag twice in parallel races).
     build: !reset null
     pull_policy: never
+    # --concurrency=1: each prefork child loads its own FastEmbed models (dense +
+    # BM25, ~600 MB) and PyMuPDF buffers; two children OOM a memory-constrained
+    # (~8 GB) Docker VM next to Ollama. Scale out with `--scale worker=N` instead.
+    # Task time limits / broker visibility timeout come from INGESTION_*_TIME_LIMIT_SECONDS.
     command:
       - celery
       - -A
@@ -78,7 +82,7 @@ services:
       - worker
       - -Q
       - ingestion
-      - --concurrency=2
+      - --concurrency=1
       - --loglevel=INFO
     healthcheck:
       test: ["CMD-SHELL", "celery -A app.infrastructure.queue.celery_app inspect ping -d celery@$$HOSTNAME --timeout 5 || exit 1"]

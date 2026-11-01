@@ -34,6 +34,7 @@ from app.domain.ports import (
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from app.application.documents import ListDocumentsUseCase
     from app.application.ingestion import ProcessDocumentUseCase, SubmitDocumentUseCase
+    from app.application.jobs import GetJobUseCase
     from app.application.query import AnswerQuestionUseCase
 
 logger = get_logger(__name__)
@@ -66,6 +67,7 @@ class Container:
     process_document: ProcessDocumentUseCase
     answer_question: AnswerQuestionUseCase
     list_documents: ListDocumentsUseCase
+    get_job: GetJobUseCase
     health_checks: dict[str, HealthCheck] = field(default_factory=dict)
     closers: list[Callable[[], None]] = field(default_factory=list)
 
@@ -291,6 +293,7 @@ def build_container(settings: Settings) -> Container:
     """
     from app.application.documents import ListDocumentsUseCase
     from app.application.ingestion import ProcessDocumentUseCase, SubmitDocumentUseCase
+    from app.application.jobs import GetJobUseCase
     from app.application.query import AnswerQuestionUseCase
 
     # Validate provider configuration before touching anything else.
@@ -334,6 +337,8 @@ def build_container(settings: Settings) -> Container:
             blob_storage=blob_storage,
             describe_images=settings.describe_images,
             batch_size=settings.embedding_batch_size,
+            describe_images_budget_seconds=settings.describe_images_budget_seconds,
+            describe_images_max_consecutive_failures=settings.describe_images_max_consecutive_failures,
         ),
         answer_question=AnswerQuestionUseCase(
             embeddings=embeddings,
@@ -347,6 +352,9 @@ def build_container(settings: Settings) -> Container:
             max_tokens=settings.llm_max_tokens,
         ),
         list_documents=ListDocumentsUseCase(job_repository=job_repository),
+        get_job=GetJobUseCase(
+            job_repository=job_repository, stale_after_seconds=settings.job_stale_after_seconds
+        ),
         health_checks=_build_health_checks(redis_client, qdrant_client),
         closers=[redis_client.close, qdrant_client.close],
     )
