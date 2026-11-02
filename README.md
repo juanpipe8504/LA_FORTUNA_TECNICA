@@ -503,18 +503,3 @@ Cada decisión relevante tiene un ADR (contexto, decisión, alternativas, consec
 
 ---
 
-## Demo
-
-<!-- TODO(integrador): enlazar vídeo/GIF de la demo (subida del PDF → progreso → pregunta → respuesta con Figura y fuente). -->
-
-**Vídeo:** _pendiente_ — TODO
-
-Guion de la demo:
-
-1. `docker compose up --build` y abrir http://localhost:3000.
-2. Subir `docs/sample/Manual_Motor.pdf` y ver el progreso del job (pending → processing → completed).
-3. Preguntar "¿Cómo se conecta el motor a una red de 400 V?" → respuesta en Markdown con citas, la
-   **Figura 2** (esquema de conexión) al lado y "Fuente: Manual_Motor.pdf, Página 4".
-4. Preguntar "¿Cuáles son los componentes principales?" → **Figura 1** (vista explosionada).
-5. Preguntar "¿Cuál es el precio del motor?" → "No tengo información suficiente…" (sin alucinar).
-6. Apagar el LLM (o poner una clave inválida) y mostrar el circuit breaker respondiendo 503 rápido.
